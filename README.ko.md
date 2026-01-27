@@ -7,7 +7,7 @@ OpenCode OAuth 인증 프리셋을 쉽게 관리하고 전환할 수 있는 도�
 ## ⚡ 빠른 설치
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/yourusername/oauth-preset-manager/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash
 ```
 
 > **참고:** `~/.local/bin`을 PATH에 추가해야 할 수 있습니다. 설치 프로그램이 안내해드립니다.

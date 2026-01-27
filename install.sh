@@ -31,7 +31,7 @@ cd "$TMP_DIR"
 echo "📦 Downloading oauth-preset-manager..."
 
 # Download the package
-REPO_URL="https://github.com/yourusername/oauth-preset-manager"
+REPO_URL="https://github.com/kmss1258/oauth-preset-manager"
 ARCHIVE_URL="$REPO_URL/archive/refs/heads/main.tar.gz"
 
 if command -v curl &> /dev/null; then

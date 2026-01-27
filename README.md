@@ -7,7 +7,7 @@ Easily manage and switch between multiple OpenCode OAuth authentication presets.
 ## ⚡ Quick Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/yourusername/oauth-preset-manager/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash
 ```
 
 > **Note:** You may need to add `~/.local/bin` to your PATH. The installer will guide you.
