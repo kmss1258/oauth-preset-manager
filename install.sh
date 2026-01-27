@@ -52,8 +52,8 @@ cd oauth-preset-manager-main
 echo ""
 echo "📦 Installing package..."
 
-# Install
-python3 -m pip install --user -q .
+# Install (or upgrade if already installed)
+python3 -m pip install --user --upgrade -q .
 
 echo "✓ Package installed"
 echo ""

@@ -102,8 +102,29 @@ class PresetManager:
         
         return True
     
-    def switch_preset(self, name: str, auto_backup: bool = True) -> bool:
-        """Switch to a different preset"""
+    def _compute_auth_diff(self, old_auth: Dict, new_auth: Dict) -> Dict:
+        """Compute differences between two auth files"""
+        old_services = set(old_auth.keys())
+        new_services = set(new_auth.keys())
+        
+        added = new_services - old_services
+        removed = old_services - new_services
+        common = old_services & new_services
+        
+        modified = []
+        for service in common:
+            if old_auth[service] != new_auth[service]:
+                modified.append(service)
+        
+        return {
+            "added": sorted(list(added)),
+            "removed": sorted(list(removed)),
+            "modified": sorted(modified),
+            "unchanged": sorted(list(common - set(modified)))
+        }
+    
+    def switch_preset(self, name: str, auto_backup: bool = True) -> Dict:
+        """Switch to a different preset and return operation details"""
         preset_path = self.presets_dir / f"{name}.json"
         
         if not preset_path.exists():
@@ -111,9 +132,22 @@ class PresetManager:
         
         auth_path = self.get_auth_path()
         
+        # Read old and new auth data for diff
+        old_auth = {}
+        if auth_path.exists():
+            with open(auth_path, 'r') as f:
+                old_auth = json.load(f)
+        
+        with open(preset_path, 'r') as f:
+            new_auth = json.load(f)
+        
+        # Compute diff
+        diff = self._compute_auth_diff(old_auth, new_auth)
+        
         # Create backup before switching
+        backup_path = None
         if auto_backup and auth_path.exists():
-            self._create_backup(f"before_{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            backup_path = self._create_backup(f"before_{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         
         # Copy preset to auth location
         auth_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +160,14 @@ class PresetManager:
         self.config["current_preset"] = name
         self._save_config()
         
-        return True
+        return {
+            "success": True,
+            "preset_name": name,
+            "source_path": str(preset_path),
+            "destination_path": str(auth_path),
+            "backup_path": str(backup_path) if backup_path else None,
+            "diff": diff
+        }
     
     def list_presets(self) -> List[Dict]:
         """List all available presets"""
@@ -173,3 +214,25 @@ class PresetManager:
             "metadata": metadata,
             "is_current": name == self.config.get("current_preset")
         }
+    
+    def delete_preset(self, name: str) -> bool:
+        """Delete a preset"""
+        preset_path = self.presets_dir / f"{name}.json"
+        
+        if not preset_path.exists():
+            raise FileNotFoundError(f"Preset not found: {name}")
+        
+        # Remove preset file
+        preset_path.unlink()
+        
+        # Remove from config
+        if name in self.config["presets"]:
+            del self.config["presets"][name]
+        
+        # Clear current_preset if it was the deleted one
+        if self.config.get("current_preset") == name:
+            self.config["current_preset"] = None
+        
+        self._save_config()
+        return True
+

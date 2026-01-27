@@ -3,7 +3,7 @@ OAuth Preset Manager - CLI Interface
 """
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 import questionary
 from rich.console import Console
 from rich.table import Table
@@ -82,6 +82,8 @@ def interactive_mode(manager: PresetManager):
         
         choices.append(questionary.Separator())
         choices.append({"name": "💾 Save new preset", "value": "__save__"})
+        choices.append({"name": "📝 View description", "value": "__view__"})
+        choices.append({"name": "🗑️  Delete preset", "value": "__delete__"})
         choices.append({"name": "❌ Exit", "value": "__exit__"})
         
         # Show menu
@@ -94,16 +96,41 @@ def interactive_mode(manager: PresetManager):
             break
         elif selection == "__save__":
             save_preset_interactive(manager)
+        elif selection == "__view__":
+            view_description_interactive(manager, presets)
+        elif selection == "__delete__":
+            delete_preset_interactive(manager, presets)
         else:
             # Switch to selected preset
             try:
-                manager.switch_preset(selection)
+                result = manager.switch_preset(selection)
                 console.print(f"\n[green]✓[/green] Switched to preset: [bold]{selection}[/bold]")
                 
-                # Show services
-                info = manager.get_preset_info(selection)
-                if info:
-                    console.print(f"[dim]Services: {', '.join(info['services'])}[/dim]")
+                # Show file operation details
+                console.print(f"\n[dim]📁 File Operations:[/dim]")
+                console.print(f"  [cyan]From:[/cyan] {result['source_path']}")
+                console.print(f"  [cyan]To:[/cyan]   {result['destination_path']}")
+                if result['backup_path']:
+                    console.print(f"  [yellow]Backup:[/yellow] {result['backup_path']}")
+                
+                # Show diff
+                diff = result['diff']
+                if diff['added'] or diff['removed'] or diff['modified']:
+                    console.print(f"\n[dim]🔄 Auth Changes:[/dim]")
+                    
+                    if diff['added']:
+                        console.print(f"  [green]+ Added:[/green] {', '.join(diff['added'])}")
+                    
+                    if diff['removed']:
+                        console.print(f"  [red]- Removed:[/red] {', '.join(diff['removed'])}")
+                    
+                    if diff['modified']:
+                        console.print(f"  [yellow]~ Modified:[/yellow] {', '.join(diff['modified'])}")
+                    
+                    if diff['unchanged']:
+                        console.print(f"  [dim]= Unchanged:[/dim] {', '.join(diff['unchanged'])}")
+                else:
+                    console.print(f"\n[dim]No changes in auth services[/dim]")
                 
                 # Ask if user wants to continue or exit
                 continue_choice = questionary.confirm("Continue managing presets?", default=False).ask()
@@ -141,6 +168,67 @@ def save_preset_interactive(manager: PresetManager):
         console.print(f"[red]✗[/red] Error: {e}")
 
 
+def view_description_interactive(manager: PresetManager, presets: List[Dict]):
+    """View preset description"""
+    preset_names = [p["name"] for p in presets]
+    
+    selection = questionary.select(
+        "Select a preset to view:",
+        choices=preset_names
+    ).ask()
+    
+    if not selection:
+        return
+    
+    info = manager.get_preset_info(selection)
+    if info:
+        console.print(f"\n[bold cyan]Preset:[/bold cyan] {selection}")
+        console.print(f"[bold]Services:[/bold] {', '.join(info['services'])}")
+        
+        metadata = info.get('metadata', {})
+        if metadata.get('description'):
+            console.print(f"[bold]Description:[/bold] {metadata['description']}")
+        else:
+            console.print("[dim]No description available[/dim]")
+        
+        if metadata.get('created_at'):
+            console.print(f"[dim]Created: {metadata['created_at']}[/dim]")
+        if metadata.get('last_used'):
+            console.print(f"[dim]Last used: {metadata['last_used']}[/dim]")
+        
+        console.print()
+
+
+def delete_preset_interactive(manager: PresetManager, presets: List[Dict]):
+    """Delete a preset interactively"""
+    preset_names = [p["name"] for p in presets]
+    
+    selection = questionary.select(
+        "Select a preset to delete:",
+        choices=preset_names
+    ).ask()
+    
+    if not selection:
+        return
+    
+    # Confirm deletion
+    confirm = questionary.confirm(
+        f"Are you sure you want to delete '{selection}'?",
+        default=False
+    ).ask()
+    
+    if not confirm:
+        console.print("[yellow]Deletion cancelled[/yellow]")
+        return
+    
+    try:
+        manager.delete_preset(selection)
+        console.print(f"\n[green]✓[/green] Deleted preset: [bold]{selection}[/bold]")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {e}")
+
+
+
 def cmd_save(manager: PresetManager, name: str):
     """Save current auth as preset"""
     try:
@@ -163,12 +251,36 @@ def cmd_save(manager: PresetManager, name: str):
 def cmd_switch(manager: PresetManager, name: str):
     """Switch to a preset"""
     try:
-        manager.switch_preset(name)
-        console.print(f"[green]✓[/green] Switched to preset: [bold]{name}[/bold]")
+        result = manager.switch_preset(name)
         
-        info = manager.get_preset_info(name)
-        if info:
-            console.print(f"[dim]Services: {', '.join(info['services'])}[/dim]")
+        console.print(f"\n[green]✓[/green] Switched to preset: [bold]{name}[/bold]")
+        
+        # Show file operation details
+        console.print(f"\n[dim]📁 File Operations:[/dim]")
+        console.print(f"  [cyan]From:[/cyan] {result['source_path']}")
+        console.print(f"  [cyan]To:[/cyan]   {result['destination_path']}")
+        if result['backup_path']:
+            console.print(f"  [yellow]Backup:[/yellow] {result['backup_path']}")
+        
+        # Show diff
+        diff = result['diff']
+        if diff['added'] or diff['removed'] or diff['modified']:
+            console.print(f"\n[dim]🔄 Auth Changes:[/dim]")
+            
+            if diff['added']:
+                console.print(f"  [green]+ Added:[/green] {', '.join(diff['added'])}")
+            
+            if diff['removed']:
+                console.print(f"  [red]- Removed:[/red] {', '.join(diff['removed'])}")
+            
+            if diff['modified']:
+                console.print(f"  [yellow]~ Modified:[/yellow] {', '.join(diff['modified'])}")
+            
+            if diff['unchanged']:
+                console.print(f"  [dim]= Unchanged:[/dim] {', '.join(diff['unchanged'])}")
+        else:
+            console.print(f"\n[dim]No changes in auth services[/dim]")
+        
     except FileNotFoundError:
         console.print(f"[red]✗[/red] Preset not found: {name}")
         console.print("\n[yellow]Available presets:[/yellow]")
