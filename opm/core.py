@@ -72,7 +72,7 @@ class PresetManager:
         
         return backup_path
     
-    def save_preset(self, name: str, description: str = "") -> bool:
+    def save_preset(self, name: str, description: str = "", watched_services: List[str] = None) -> bool:
         """Save current auth.json as a preset"""
         auth_path = self.get_auth_path()
         
@@ -91,11 +91,16 @@ class PresetManager:
         services = list(auth_data.keys())
         now = datetime.now().isoformat()
         
+        # Default watched_services to ["openai"] if not specified
+        if watched_services is None:
+            watched_services = ["openai"]
+        
         self.config["presets"][name] = {
             "created_at": now,
             "last_used": now,
             "description": description,
-            "services": services
+            "services": services,
+            "watched_services": watched_services
         }
         self.config["current_preset"] = name
         self._save_config()
@@ -169,6 +174,77 @@ class PresetManager:
             "diff": diff
         }
     
+    def switch_preset_selective(self, name: str, selected_services: List[str] = None, auto_backup: bool = True) -> Dict:
+        """Switch to a preset with optional selective service update
+        
+        Args:
+            name: Preset name to switch to
+            selected_services: List of service names to update. If None, updates all services.
+            auto_backup: Whether to create backup before switching
+            
+        Returns:
+            Dict with operation details including diff and paths
+        """
+        preset_path = self.presets_dir / f"{name}.json"
+        
+        if not preset_path.exists():
+            raise FileNotFoundError(f"Preset not found: {name}")
+        
+        auth_path = self.get_auth_path()
+        
+        # Read old and new auth data
+        old_auth = {}
+        if auth_path.exists():
+            with open(auth_path, 'r') as f:
+                old_auth = json.load(f)
+        
+        with open(preset_path, 'r') as f:
+            new_auth = json.load(f)
+        
+        # Compute diff
+        diff = self._compute_auth_diff(old_auth, new_auth)
+        
+        # Create backup before switching
+        backup_path = None
+        if auto_backup and auth_path.exists():
+            backup_path = self._create_backup(f"before_{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        
+        # Merge auth data based on selected services
+        if selected_services is None:
+            # Update all services (backward compatible)
+            merged_auth = new_auth
+        else:
+            # Start with current auth and update only selected services
+            merged_auth = old_auth.copy()
+            for service in selected_services:
+                if service in new_auth:
+                    merged_auth[service] = new_auth[service]
+                elif service in merged_auth:
+                    # Service exists in current but not in new preset - remove it
+                    del merged_auth[service]
+        
+        # Write merged auth to file
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(auth_path, 'w') as f:
+            json.dump(merged_auth, f, indent=2)
+        
+        # Update metadata
+        now = datetime.now().isoformat()
+        if name in self.config["presets"]:
+            self.config["presets"][name]["last_used"] = now
+        self.config["current_preset"] = name
+        self._save_config()
+        
+        return {
+            "success": True,
+            "preset_name": name,
+            "source_path": str(preset_path),
+            "destination_path": str(auth_path),
+            "backup_path": str(backup_path) if backup_path else None,
+            "diff": diff,
+            "selected_services": selected_services
+        }
+    
     def list_presets(self) -> List[Dict]:
         """List all available presets"""
         presets = []
@@ -235,4 +311,30 @@ class PresetManager:
         
         self._save_config()
         return True
+    
+    def detect_current_preset(self) -> Optional[str]:
+        """Detect which preset matches current auth.json by comparing content"""
+        auth_path = self.get_auth_path()
+        if not auth_path.exists():
+            return None
+        
+        try:
+            with open(auth_path, 'r') as f:
+                current_auth = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+        
+        # Compare with each preset
+        for preset_file in self.presets_dir.glob("*.json"):
+            try:
+                with open(preset_file, 'r') as f:
+                    preset_auth = json.load(f)
+                
+                # Exact match check
+                if current_auth == preset_auth:
+                    return preset_file.stem
+            except (json.JSONDecodeError, IOError):
+                continue
+        
+        return None
 
