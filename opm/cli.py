@@ -174,9 +174,9 @@ def interactive_mode(manager: PresetManager):
                     update_choice = questionary.select(
                         t('how_to_update'),
                         choices=[
+                            {"name": t('update_watched'), "value": "watched"},
                             {"name": t('update_all'), "value": "all"},
                             {"name": t('update_selective'), "value": "selective"},
-                            {"name": t('update_watched'), "value": "watched"},
                             {"name": t('cancel'), "value": "cancel"}
                         ]
                     ).ask()
