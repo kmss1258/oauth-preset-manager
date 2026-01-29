@@ -178,7 +178,9 @@ class QuotaApp(App):
             self._add_rows_to_node(active_node, groups[active_key])
             del groups[active_key]
 
-        for name, items in groups.items():
+        # Sort preset names alphabetically
+        for name in sorted(groups.keys()):
+            items = groups[name]
             preset_node = tree.root.add(f"Preset: {name}", expand=True)
             self._add_rows_to_node(preset_node, items)
 
