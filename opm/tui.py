@@ -173,9 +173,36 @@ class QuotaApp(App):
                     groups[p_name] = []
                 groups[p_name].append(res)
 
-        if groups[active_key]:
-            active_node = tree.root.add(active_key, expand=False)  # Collapsed by default
-            self._add_rows_to_node(active_node, groups[active_key])
+        # Separate active items into Google and non-Google
+        active_items = groups.get(active_key, [])
+        if active_items:
+            active_node = tree.root.add("Current Active", expand=True)
+            
+            google_items = []
+            other_items = []
+            
+            for item in active_items:
+                provider = item.get("provider", "")
+                presets = item.get("presets", [])
+                
+                # Check if this is an Antigravity Google item
+                is_antigravity = any("Antigravity" in p for p in presets)
+                
+                if provider == "google" and is_antigravity:
+                    google_items.append(item)
+                else:
+                    other_items.append(item)
+            
+            # Add non-Google items directly to Current Active
+            for item in other_items:
+                self._add_single_item(active_node, item)
+            
+            # Add Google items under Antigravity subnode (collapsed)
+            if google_items:
+                antigravity_node = active_node.add("Antigravity (Google)", expand=False)
+                for item in google_items:
+                    self._add_single_item(antigravity_node, item)
+            
             del groups[active_key]
 
         # Sort preset names alphabetically
@@ -185,6 +212,28 @@ class QuotaApp(App):
             self._add_rows_to_node(preset_node, items)
 
         tree.focus()
+
+    def _add_single_item(self, node, item: Dict):
+        """Add a single quota item as a leaf node"""
+        daily = item.get("daily") or {}
+        weekly = item.get("weekly") or {}
+        provider = str(item.get("provider", "-"))
+        if provider == "google" and daily.get("label"):
+            provider = f"google ({daily['label']})"
+
+        daily_str = f"Daily: {_format_percent(daily.get('percent_remaining'))} ({_format_reset(daily.get('reset_time_iso'))})"
+        weekly_str = f"Weekly: {_format_percent(weekly.get('percent_remaining'))} ({_format_reset(weekly.get('reset_time_iso'))})"
+        account = item.get("account_id") or "-"
+        error = item.get("error")
+
+        if error:
+            label = f"{provider} | {daily_str} | {weekly_str} | {account} | [red]{error}[/red]"
+        else:
+            label = f"{provider} | {daily_str} | {weekly_str} | {account}"
+
+        # Attach item data to node for clipboard access
+        leaf = node.add_leaf(label)
+        leaf.data = item
 
     def _add_rows_to_node(self, node, items: List[Dict]):
         for item in items:
