@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict
 import questionary
+from questionary import Style
 from rich.console import Console
 from rich.table import Table
 from rich import box
@@ -16,6 +17,21 @@ from .i18n import t
 
 
 console = Console()
+
+custom_style = Style(
+    [
+        ("qmark", "fg:#FF9D00 bold"),
+        ("question", "bold"),
+        ("answer", "fg:#FF9D00 bold"),
+        ("pointer", "fg:#FF9D00 bold"),
+        ("highlighted", "fg:#FF9D00 bold"),
+        ("selected", "fg:#FF9D00"),
+        ("separator", "fg:#6C6C6C"),
+        ("instruction", "fg:#6C6C6C"),
+        ("text", ""),
+        ("disabled", "fg:#858585 italic"),
+    ]
+)
 
 
 def _format_percent(value: Optional[int]) -> str:
@@ -109,6 +125,32 @@ def _render_quota_table(results: List[Dict]):
     console.print(table)
 
 
+def _print_switch_result(result: Dict):
+    name = result["preset_name"]
+    console.print(f"\n[green]✓[/green] {t('switched_to')}: [bold]{name}[/bold]")
+
+    if result.get("backup_path"):
+        console.print(f"  [dim]📦 Backup saved to: {result['backup_path']}[/dim]")
+
+    diff = result.get("diff", {})
+    if diff.get("added") or diff.get("removed") or diff.get("modified"):
+        console.print(f"\n[dim]🔄 {t('updated_services')}[/dim]")
+        if diff.get("added"):
+            console.print(
+                f"  [green]+ {t('added')}:[/green] {', '.join(diff['added'])}"
+            )
+        if diff.get("removed"):
+            console.print(
+                f"  [red]- {t('removed')}:[/red] {', '.join(diff['removed'])}"
+            )
+        if diff.get("modified"):
+            console.print(
+                f"  [yellow]~ {t('modified')}:[/yellow] {', '.join(diff['modified'])}"
+            )
+    else:
+        console.print(f"\n[dim]{t('no_changes_detected')}[/dim]")
+
+
 def setup_auth_path(manager: PresetManager) -> bool:
     """Setup OpenCode auth.json path on first run"""
     default_path = Path.home() / ".local" / "share" / "opencode" / "auth.json"
@@ -121,7 +163,7 @@ def setup_auth_path(manager: PresetManager) -> bool:
     console.print(f"[yellow]⚠[/yellow] {t('auth_not_found')}")
 
     custom_path = questionary.path(
-        t("enter_auth_path"), default=str(default_path)
+        t("enter_auth_path"), default=str(default_path), style=custom_style
     ).ask()
 
     if custom_path and Path(custom_path).exists():
@@ -152,7 +194,7 @@ def view_description_interactive(manager: PresetManager, presets: List[Dict]):
             p.get("last_used", ""),
         )
     console.print(table)
-    questionary.press_any_key_to_continue().ask()
+    questionary.press_any_key_to_continue(style=custom_style).ask()
 
 
 def save_preset_interactive(manager: PresetManager):
@@ -165,12 +207,13 @@ def save_preset_interactive(manager: PresetManager):
     name = questionary.text(
         t("enter_preset_name"),
         validate=lambda text: True if text and len(text) > 0 else t("name_required"),
+        style=custom_style,
     ).ask()
 
     if not name:
         return
 
-    description = questionary.text(t("enter_description")).ask()
+    description = questionary.text(t("enter_description"), style=custom_style).ask()
 
     # Detect available services
     available_services = []
@@ -186,6 +229,7 @@ def save_preset_interactive(manager: PresetManager):
         watched_services = questionary.checkbox(
             t("watched_services_prompt"),
             choices=[{"name": s, "checked": s == "openai"} for s in available_services],
+            style=custom_style,
         ).ask()
         if not watched_services:
             watched_services = ["openai"]
@@ -203,13 +247,15 @@ def delete_preset_interactive(manager: PresetManager, presets: List[Dict]):
         return
 
     choices = [p["name"] for p in presets]
-    selection = questionary.select(t("select_preset_to_delete"), choices=choices).ask()
+    selection = questionary.select(
+        t("select_preset_to_delete"), choices=choices, style=custom_style
+    ).ask()
 
     if not selection:
         return
 
     confirm = questionary.confirm(
-        t("confirm_delete", name=selection), default=False
+        t("confirm_delete", name=selection), default=False, style=custom_style
     ).ask()
 
     if confirm:
@@ -240,25 +286,7 @@ def cmd_switch(manager: PresetManager, name: str):
     """Switch to a preset"""
     try:
         result = manager.switch_preset(name)
-        console.print(f"\n[green]✓[/green] {t('switched_to')}: [bold]{name}[/bold]")
-
-        diff = result.get("diff", {})
-        if diff.get("added") or diff.get("removed") or diff.get("modified"):
-            console.print(f"\n[dim]🔄 {t('updated_services')}[/dim]")
-            if diff.get("added"):
-                console.print(
-                    f"  [green]+ {t('added')}:[/green] {', '.join(diff['added'])}"
-                )
-            if diff.get("removed"):
-                console.print(
-                    f"  [red]- {t('removed')}:[/red] {', '.join(diff['removed'])}"
-                )
-            if diff.get("modified"):
-                console.print(
-                    f"  [yellow]~ {t('modified')}:[/yellow] {', '.join(diff['modified'])}"
-                )
-        else:
-            console.print(f"\n[dim]{t('no_changes_detected')}[/dim]")
+        _print_switch_result(result)
 
     except FileNotFoundError:
         console.print(f"[red]✗[/red] {t('preset_not_found')}: {name}")
@@ -292,7 +320,9 @@ def interactive_mode(manager: PresetManager):
 
         if not presets:
             console.print(f"\n[yellow]{t('no_presets_found')}[/yellow]")
-            save_new = questionary.confirm(t("save_current_as_preset")).ask()
+            save_new = questionary.confirm(
+                t("save_current_as_preset"), style=custom_style
+            ).ask()
             if save_new:
                 save_preset_interactive(manager)
             return
@@ -310,15 +340,14 @@ def interactive_mode(manager: PresetManager):
             overwrite = questionary.confirm(
                 t("overwrite_current_preset", preset=current, active=active_label),
                 default=False,
+                style=custom_style,
             ).ask()
             mismatch_prompted = True
             if overwrite:
                 try:
-                    manager.switch_preset(current)
+                    result = manager.switch_preset(current)
+                    _print_switch_result(result)
                     detected_preset = current
-                    console.print(
-                        f"[green]✓[/green] {t('switched_to')}: [bold]{current}[/bold]"
-                    )
                 except Exception as e:
                     console.print(f"[red]✗[/red] {t('error')}: {e}")
 
@@ -349,9 +378,7 @@ def interactive_mode(manager: PresetManager):
                     break
 
         selection = questionary.select(
-            t("select_preset"),
-            choices=choices,
-            default=default_val,
+            t("select_preset"), choices=choices, default=default_val, style=custom_style
         ).ask()
 
         if not selection or selection == "__exit__":

@@ -20,6 +20,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "select_preset": "전환할 프리셋 선택:",
         "save_new_preset": "💾 새 프리셋 저장",
         "view_description": "📝 설명 보기",
+        "view_quota": "📊 할당량(Quota) 보기",
         "delete_preset": "🗑️  프리셋 삭제",
         "exit": "❌ 종료",
         # Preset actions
