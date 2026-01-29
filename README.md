@@ -1,126 +1,76 @@
-# 🔐 OAuth Preset Manager
+# OAuth Preset Manager (OPM)
 
-Easily manage and switch between multiple OpenCode OAuth authentication presets.
+![OPM Hero](hero1.png)
 
----
-
-## ⚡ Quick Install
-
-```bash
-curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash
-```
-
-> **Note:** You may need to add `~/.local/bin` to your PATH. The installer will guide you.
-
-## 🚀 Quick Start
-
-Just run:
-```bash
-opm
-```
-
-That's it! 🎉 Use arrow keys to select and switch between presets.
+**Manage your OAuth tokens like a pro.** Switch between multiple OpenAI/Google accounts instantly in OpenCode, check detailed quota usage, and keep your development flow uninterrupted.
 
 ---
 
-## ✨ Features
+## 🔥 Features
 
-- 🔄 **Quick Switching**: Switch between different OAuth accounts instantly
-- 💾 **Preset Management**: Save and organize multiple authentication states
-- 🎨 **Interactive UI**: Beautiful terminal interface with menu selection
-- 🔒 **Auto Backup**: Automatic backups before switching presets
-- ⚡ **Simple Commands**: Just `save` and `switch` - that's it!
+- **Instant Switching**: Swap `auth.json` configurations with a single command.
+- **Quota Dashboard**: View real-time quota usage for OpenAI & Google (Antigravity) accounts.
+  - Supports detailed breakdown for Antigravity models (Flash, Pro, Premium).
+  - Visual progress bars and reset timers.
+- **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
+- **TUI Interface**: Interactive terminal UI for easy management and monitoring.
+
+## 🚀 Installation
+
+Install directly from the repository:
+
+```bash
+# Clone and install
+git clone https://github.com/kmss1258/oauth-preset-manager.git
+cd oauth-preset-manager
+./install.sh
+```
+
+Or install manually with pip:
+
+```bash
+pip install .
+```
 
 ## 📖 Usage
 
-### 🎯 Interactive Mode (Recommended)
-
-Simply run without arguments to enter interactive mode:
-
+### Interactive Mode (Recommended)
+Just run `opm` to open the interactive menu:
 ```bash
 opm
 ```
+- Select a preset to switch.
+- View detailed quotas.
+- Save current configuration as a new preset.
 
-This will show you a menu where you can:
-- ⬆️⬇️ Browse and select presets with arrow keys
-- 👀 See which services each preset contains
-- ⚡ Switch presets instantly
-- 💾 Save new presets
+### CLI Commands
 
-### 💻 Command Line Mode
-
-**Save current auth as a preset:**
+**Switch Preset:**
 ```bash
-opm save work
-opm save personal
+opm switch <preset_name>
 ```
 
-**Switch to a preset:**
+**Check Quotas:**
 ```bash
-opm switch work
-opm switch personal
+opm quota
+# or
+opm q
 ```
+> Shows usage for all presets + currently active Antigravity session.
 
-## 🔧 How It Works
-
-OAuth Preset Manager manages your OpenCode authentication file (`~/.local/share/opencode/auth.json`) by:
-
-1. **Saving**: Creates a snapshot of your current auth state
-2. **Switching**: Replaces your current auth with a saved preset
-3. **Backing up**: Automatically backs up before each switch
-
-All presets are stored in `~/.config/oauth-preset-manager/presets/`
-
-## 📝 Example Workflow
-
+**Save Current Auth:**
 ```bash
-# 1. Save your current work account
-$ opm save work
-✓ Saved preset: work
-Services: anthropic, openai, google, zai-coding-plan
-
-# 2. Logout and login with personal account in OpenCode
-# ... (logout/login in OpenCode)
-
-# 3. Save your personal account
-$ opm save personal
-✓ Saved preset: personal
-Services: anthropic, openai
-
-# 4. Switch back to work account anytime
-$ opm switch work
-✓ Switched to preset: work
-Services: anthropic, openai, google, zai-coding-plan
-
-# Or use interactive mode
-$ opm
-# Select from menu with arrow keys
+opm save <new_preset_name>
 ```
 
-## ⚙️ Configuration
+## 🛠 Configuration
 
-On first run, `opm` will automatically detect your OpenCode auth file at:
-```
-~/.local/share/opencode/auth.json
-```
-
-If it's in a different location, you'll be prompted to enter the path.
-
-## 📁 Data Storage
-
-- **Presets**: `~/.config/oauth-preset-manager/presets/`
-- **Backups**: `~/.config/oauth-preset-manager/backups/`
-- **Config**: `~/.config/oauth-preset-manager/config.json`
-
-## 📋 Requirements
-
-- Python 3.7+
-- pip
-
-## 📄 License
-
-MIT
+Presets are stored in `~/.local/share/opencode/presets/`.
+The tool automatically detects your OpenCode `auth.json` location.
 
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
+*Ultraworked with [Sisyphus](https://github.com/code-yeongyu/oh-my-opencode)*
