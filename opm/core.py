@@ -8,6 +8,7 @@ import shutil
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
@@ -370,6 +371,15 @@ class PresetManager:
     def collect_openai_quota(self) -> List[Dict]:
         """Collect OpenAI quota for unique OAuth tokens across presets"""
         token_map: Dict[str, Dict] = {}
+
+        def format_preset_label(name: str) -> str:
+            path = self.presets_dir / f"{name}.json"
+            try:
+                display = f"~/{path.relative_to(Path.home())}"
+            except ValueError:
+                display = str(path)
+            return f"{name} ({display})"
+
         for preset_name, auth_data in self.list_preset_auth_data():
             entry = _extract_openai_oauth(auth_data)
             if not entry:
@@ -386,17 +396,28 @@ class PresetManager:
                     "presets": [],
                 },
             )
-            item["presets"].append(preset_name)
+            item["presets"].append(format_preset_label(preset_name))
 
         results: List[Dict] = []
-        for item in token_map.values():
-            result = _fetch_openai_quota_for_token(
-                access_token=item["access"],
-                expires=item.get("expires"),
-                account_id=item.get("account_id"),
-            )
-            result["presets"] = sorted(item["presets"])
-            results.append(result)
+        with ThreadPoolExecutor() as executor:
+            future_to_item = {
+                executor.submit(
+                    _fetch_openai_quota_for_token,
+                    access_token=item["access"],
+                    expires=item.get("expires"),
+                    account_id=item.get("account_id"),
+                ): item
+                for item in token_map.values()
+            }
+
+            for future in as_completed(future_to_item):
+                item = future_to_item[future]
+                try:
+                    result = future.result()
+                    result["presets"] = sorted(item["presets"])
+                    results.append(result)
+                except Exception:
+                    pass
 
         return results
 
@@ -439,10 +460,18 @@ class PresetManager:
 
     def collect_active_quota(self) -> List[Dict]:
         """Collect quota for currently active auth.json and antigravity accounts"""
-        results = []
+        tasks = []
 
         # 1. Main auth.json
         auth_path = self.get_auth_path()
+        display_path = str(auth_path)
+        try:
+            display_path = f"~/{auth_path.relative_to(Path.home())}"
+        except ValueError:
+            pass
+
+        active_label = f"(Current Active: {display_path})"
+
         if auth_path.exists():
             try:
                 with open(auth_path, "r") as f:
@@ -451,33 +480,64 @@ class PresetManager:
                 # OpenAI
                 openai_entry = _extract_openai_oauth(auth_data)
                 if openai_entry and openai_entry.get("access"):
-                    res = _fetch_openai_quota_for_token(
-                        access_token=openai_entry["access"],
-                        expires=openai_entry.get("expires"),
-                        account_id=openai_entry.get("account_id"),
+                    tasks.append(
+                        (
+                            _fetch_openai_quota_for_token,
+                            {
+                                "access_token": openai_entry["access"],
+                                "expires": openai_entry.get("expires"),
+                                "account_id": openai_entry.get("account_id"),
+                            },
+                            [active_label],
+                            None,
+                        )
                     )
-                    res["presets"] = ["(Current Active)"]
-                    results.append(res)
             except Exception:
                 pass
 
         # 2. Antigravity Accounts
         ag_path = get_antigravity_accounts_path()
         for account in _extract_antigravity_accounts(ag_path):
-            res_list = _fetch_google_quota_for_token(
-                access_token=None,
-                refresh_token=account["refresh"],
-                project_id=account["project_id"],
+            tasks.append(
+                (
+                    _fetch_google_quota_for_token,
+                    {
+                        "access_token": None,
+                        "refresh_token": account["refresh"],
+                        "project_id": account["project_id"],
+                    },
+                    [f"(Antigravity: {account.get('email', 'User')})"],
+                    account.get("project_id"),
+                )
             )
-            for res in res_list:
-                res["presets"] = [f"(Antigravity: {account.get('email', 'User')})"]
-                # Use project_id from account if result doesn't have it
-                if (
-                    not res.get("account_id")
-                    or res.get("account_id") == "unknown-project"
-                ):
-                    res["account_id"] = account.get("project_id")
-                results.append(res)
+
+        results = []
+        with ThreadPoolExecutor() as executor:
+            future_to_ctx = {}
+            for func, kwargs, presets, acc_id in tasks:
+                future = executor.submit(func, **kwargs)
+                future_to_ctx[future] = (presets, acc_id)
+
+            for future in as_completed(future_to_ctx):
+                presets, acc_id = future_to_ctx[future]
+                try:
+                    res = future.result()
+                    # Result can be Dict or List[Dict]
+                    if isinstance(res, list):
+                        for r in res:
+                            r["presets"] = presets
+                            if (
+                                not r.get("account_id")
+                                or r.get("account_id") == "unknown-project"
+                            ):
+                                if acc_id:
+                                    r["account_id"] = acc_id
+                            results.append(r)
+                    else:
+                        res["presets"] = presets
+                        results.append(res)
+                except Exception:
+                    pass
 
         return results
 
