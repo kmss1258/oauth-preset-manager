@@ -198,9 +198,9 @@ class QuotaApp(App):
             error = item.get("error")
 
             if error:
-                label = f"{provider} | {account} | [red]{error}[/red]"
+                label = f"{provider} | {daily_str} | {weekly_str} | {account} | [red]{error}[/red]"
             else:
-                label = f"{provider} | {account} | {daily_str} | {weekly_str}"
+                label = f"{provider} | {daily_str} | {weekly_str} | {account}"
 
             # Attach item data to node for clipboard access
             leaf = node.add_leaf(label)
