@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Installing OAuth Preset Manager..."
+echo "🚀 Installing OAuth Preset Manager from local source..."
 echo ""
 
 # Check Python
@@ -24,32 +24,6 @@ fi
 echo "✓ Found pip"
 echo ""
 
-# Create temporary directory
-TMP_DIR=$(mktemp -d)
-cd "$TMP_DIR"
-
-echo "📦 Downloading oauth-preset-manager..."
-
-# Download the package
-REPO_URL="https://github.com/kmss1258/oauth-preset-manager"
-ARCHIVE_URL="$REPO_URL/archive/refs/heads/main.tar.gz"
-
-if command -v curl &> /dev/null; then
-    curl -sSL "$ARCHIVE_URL" -o oauth-preset-manager.tar.gz
-elif command -v wget &> /dev/null; then
-    wget -q "$ARCHIVE_URL" -O oauth-preset-manager.tar.gz
-else
-    echo "❌ Error: Neither curl nor wget found"
-    exit 1
-fi
-
-echo "✓ Downloaded package"
-
-# Extract
-tar -xzf oauth-preset-manager.tar.gz
-cd oauth-preset-manager-main
-
-echo ""
 echo "📦 Installing package..."
 
 # Install (or upgrade if already installed)
@@ -57,10 +31,6 @@ python3 -m pip install --user --upgrade -q .
 
 echo "✓ Package installed"
 echo ""
-
-# Cleanup
-cd /
-rm -rf "$TMP_DIR"
 
 # Check installation
 if command -v opm &> /dev/null; then
@@ -70,6 +40,7 @@ if command -v opm &> /dev/null; then
     echo "  opm              # Interactive mode"
     echo "  opm save <name>  # Save current auth as preset"
     echo "  opm switch <name> # Switch to preset"
+    echo "  opm quota         # Show quota for all presets"
     echo ""
     echo "Run 'opm' to get started!"
 else
