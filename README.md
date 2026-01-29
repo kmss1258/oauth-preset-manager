@@ -6,6 +6,22 @@
 
 ---
 
+## ⚡ Quick Start
+
+Install and run in one line:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash && opm
+```
+
+Or if already installed, just run:
+
+```bash
+opm
+```
+
+---
+
 ## 🔥 Features
 
 - **Instant Switching**: Swap `auth.json` configurations with a single command.
