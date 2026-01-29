@@ -73,11 +73,11 @@ def _render_quota_table(results: List[Dict]):
 
     table = Table(title=t("quota_title"), box=box.SIMPLE)
     table.add_column(t("quota_provider"), style="cyan", no_wrap=True)
-    table.add_column(t("quota_account"))
     table.add_column(t("quota_daily"), justify="right")
     table.add_column(t("quota_daily_reset"))
     table.add_column(t("quota_weekly"), justify="right")
     table.add_column(t("quota_weekly_reset"))
+    table.add_column(t("quota_account"))
     table.add_column(t("quota_presets"))
     table.add_column(t("quota_error"))
 
@@ -99,11 +99,11 @@ def _render_quota_table(results: List[Dict]):
 
         row = (
             provider,
-            account,
             _format_percent(daily.get("percent_remaining")),
             _format_reset(daily.get("reset_time_iso")),
             _format_percent(weekly.get("percent_remaining")),
             _format_reset(weekly.get("reset_time_iso")),
+            account,
             presets or "-",
             error,
         )

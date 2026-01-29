@@ -7,6 +7,7 @@ from textual.binding import Binding
 from rich.table import Table
 from rich.text import Text
 from rich import box
+import pyperclip
 
 from .core import PresetManager, time_until_reset
 
@@ -65,6 +66,7 @@ class QuotaApp(App):
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
         ("space", "toggle_node", "Toggle"),
+        ("c", "copy_key", "Copy Key"),
     ]
 
     def __init__(self, manager: PresetManager):
@@ -90,6 +92,24 @@ class QuotaApp(App):
         tree = self.query_one(Tree)
         if tree.cursor_node:
             tree.cursor_node.toggle()
+
+    def action_copy_key(self) -> None:
+        """Copy account_id from selected node to clipboard"""
+        tree = self.query_one(Tree)
+        if not tree.cursor_node or not tree.cursor_node.data:
+            self.notify("No account selected", severity="warning", timeout=2)
+            return
+        
+        account_id = tree.cursor_node.data.get("account_id")
+        if not account_id or account_id == "-":
+            self.notify("No account ID available", severity="warning", timeout=2)
+            return
+        
+        try:
+            pyperclip.copy(account_id)
+            self.notify(f"Copied: {account_id}", timeout=2)
+        except Exception as e:
+            self.notify(f"Copy failed: {e}", severity="error", timeout=3)
 
     @work(exclusive=True, thread=True)
     async def refresh_data(self) -> None:
@@ -173,7 +193,9 @@ class QuotaApp(App):
             else:
                 label = f"{provider} | {account} | {daily_str} | {weekly_str}"
 
-            node.add_leaf(label)
+            # Attach item data to node for clipboard access
+            leaf = node.add_leaf(label)
+            leaf.data = item
 
 
 def run_tui(manager: PresetManager):
