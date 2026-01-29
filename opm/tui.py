@@ -7,7 +7,12 @@ from textual.binding import Binding
 from rich.table import Table
 from rich.text import Text
 from rich import box
-import pyperclip
+
+try:
+    import pyperclip
+    HAS_CLIPBOARD = True
+except ImportError:
+    HAS_CLIPBOARD = False
 
 from .core import PresetManager, time_until_reset
 
@@ -95,6 +100,10 @@ class QuotaApp(App):
 
     def action_copy_key(self) -> None:
         """Copy account_id from selected node to clipboard"""
+        if not HAS_CLIPBOARD:
+            self.notify("Clipboard not available (install pyperclip)", severity="warning", timeout=3)
+            return
+            
         tree = self.query_one(Tree)
         if not tree.cursor_node or not tree.cursor_node.data:
             self.notify("No account selected", severity="warning", timeout=2)
