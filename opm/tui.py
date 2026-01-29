@@ -112,7 +112,17 @@ class QuotaApp(App):
 
         groups: Dict[str, List[Dict]] = {}
 
-        active_key = "Current Active / Antigravity"
+        # Determine active label dynamically
+        active_label_base = "Current Active"
+        for res in results:
+            for p in res.get("presets", []):
+                if "Current Active" in p:
+                    active_label_base = p
+                    break
+            if active_label_base != "Current Active":
+                break
+
+        active_key = f"{active_label_base} / Antigravity"
         groups[active_key] = []
 
         for res in results:
