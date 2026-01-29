@@ -174,14 +174,14 @@ class QuotaApp(App):
                 groups[p_name].append(res)
 
         if groups[active_key]:
-            active_node = tree.root.add(active_key, expand=False)
+            active_node = tree.root.add(active_key, expand=False)  # Collapsed by default
             self._add_rows_to_node(active_node, groups[active_key])
             del groups[active_key]
 
         # Sort preset names alphabetically
         for name in sorted(groups.keys()):
             items = groups[name]
-            preset_node = tree.root.add(f"Preset: {name}", expand=True)
+            preset_node = tree.root.add(f"Preset: {name}", expand=True)  # Expanded by default
             self._add_rows_to_node(preset_node, items)
 
         tree.focus()
