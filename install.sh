@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Installing OAuth Preset Manager from local source..."
+echo "🚀 Installing OAuth Preset Manager..."
 echo ""
 
 # Check Python
@@ -22,12 +22,34 @@ if ! python3 -m pip --version &> /dev/null; then
 fi
 
 echo "✓ Found pip"
+
+# Check git
+if ! command -v git &> /dev/null; then
+    echo "❌ Error: git is required but not found"
+    echo "Please install git"
+    exit 1
+fi
+
+echo "✓ Found git"
+echo ""
+
+# Create temporary directory
+TEMP_DIR=$(mktemp -d)
+echo "📥 Cloning repository to $TEMP_DIR..."
+
+# Clone the repository
+git clone -q https://github.com/kmss1258/oauth-preset-manager.git "$TEMP_DIR"
+
+echo "✓ Repository cloned"
 echo ""
 
 echo "📦 Installing package..."
 
 # Install (or upgrade if already installed)
-python3 -m pip install --user --upgrade -q .
+python3 -m pip install --user --upgrade -q "$TEMP_DIR"
+
+# Clean up
+rm -rf "$TEMP_DIR"
 
 echo "✓ Package installed"
 echo ""
