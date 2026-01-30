@@ -378,7 +378,11 @@ def interactive_mode(manager: PresetManager):
                     break
 
         selection = questionary.select(
-            t("select_preset"), choices=choices, default=default_val, style=custom_style
+            t("select_preset"), 
+            choices=choices, 
+            default=default_val, 
+            style=custom_style,
+            instruction="(Use arrow keys, ESC to exit)"
         ).ask()
 
         if not selection or selection == "__exit__":
