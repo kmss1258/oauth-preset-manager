@@ -132,6 +132,102 @@ function deduplicateResults(results) {
   return Array.from(seen.values());
 }
 
+function getTerminalWidth() {
+  return process.stdout.columns || 80;
+}
+
+function calculateColWidths(totalWidth) {
+  const borderChars = 6;
+  const availableWidth = Math.max(60, totalWidth - borderChars);
+  
+  if (availableWidth < 80) {
+    return {
+      provider: 12,
+      daily: 16,
+      reset: 8,
+      account: 20,
+      presets: availableWidth - 56,
+    };
+  } else if (availableWidth < 100) {
+    return {
+      provider: 14,
+      daily: 18,
+      reset: 10,
+      account: 24,
+      presets: availableWidth - 66,
+    };
+  } else {
+    return {
+      provider: 16,
+      daily: 20,
+      reset: 10,
+      account: 28,
+      presets: Math.min(40, availableWidth - 74),
+    };
+  }
+}
+
+function renderQuotaCompact(results, termWidth) {
+  console.log();
+  console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
+  console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
+  console.log();
+  
+  const activeItems = results.filter(r => 
+    r.presets?.some(p => p.includes('Current Active') || p.includes('Antigravity'))
+  );
+  const presetItems = results.filter(r => 
+    !r.presets?.some(p => p.includes('Current Active') || p.includes('Antigravity'))
+  );
+  
+  const renderItem = (result, index) => {
+    const daily = result.daily || {};
+    const error = result.error;
+    const account = result.account_id || '-';
+    const presets = result.presets?.join(', ').slice(0, termWidth - 20) || '-';
+    
+    let provider = result.provider || '-';
+    if (provider === 'google' && daily.label) {
+      provider = `${chalk.blue('google')}(${chalk.dim(daily.label)})`;
+    } else if (provider === 'openai') {
+      provider = chalk.green('openai');
+    }
+    
+    const percent = error 
+      ? chalk.red('ERR')
+      : (daily.percent_remaining != null 
+          ? (daily.percent_remaining < 20 ? chalk.red : daily.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${daily.percent_remaining}%`)
+          : chalk.gray('-'));
+    
+    const reset = daily.reset_time_iso 
+      ? chalk.cyan(timeUntilReset(daily.reset_time_iso))
+      : chalk.gray('-');
+    
+    const line1 = `  ${index + 1}. ${provider.padEnd(18)} ${percent.padStart(4)} ${reset.padStart(6)} ${chalk.yellow(account.slice(0, 20))}`;
+    const line2 = presets !== '-' ? `     ${chalk.dim(presets)}` : '';
+    
+    console.log(line1);
+    if (line2) console.log(line2);
+    console.log();
+  };
+  
+  if (activeItems.length > 0) {
+    console.log(chalk.bold.green('  ⚡ Active Session'));
+    console.log();
+    activeItems.forEach((item, i) => renderItem(item, i));
+  }
+  
+  if (presetItems.length > 0) {
+    if (activeItems.length > 0) {
+      console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
+      console.log();
+    }
+    console.log(chalk.bold.blue('  📦 Presets'));
+    console.log();
+    presetItems.forEach((item, i) => renderItem(item, activeItems.length + i));
+  }
+}
+
 function renderQuotaTable(results) {
   if (!results || results.length === 0) {
     console.log(chalk.dim(t('quota_no_results')));
@@ -139,6 +235,14 @@ function renderQuotaTable(results) {
   }
 
   const deduped = deduplicateResults(results);
+  const termWidth = getTerminalWidth();
+  
+  if (termWidth < 100) {
+    renderQuotaCompact(deduped, termWidth);
+    return;
+  }
+  
+  const widths = calculateColWidths(termWidth);
 
   const table = new Table({
     head: [
@@ -153,37 +257,40 @@ function renderQuotaTable(results) {
       border: ['gray'],
       compact: true,
     },
-    colWidths: [16, 20, 10, 28, 35],
+    colWidths: [widths.provider, widths.daily, widths.reset, widths.account, widths.presets],
     wordWrap: true,
   });
 
   const activeRows = [];
   const presetRows = [];
 
+  const accountSliceLen = Math.max(15, widths.account - 3);
+  const presetsSliceLen = Math.max(20, widths.presets - 2);
+
   for (const result of deduped) {
     const daily = result.daily || {};
     const weekly = result.weekly;
     const account = result.account_id || chalk.gray('-');
     const presetsList = result.presets || [];
-    const presets = presetsList.join(', ').slice(0, 33);
+    const presets = presetsList.join(', ').slice(0, presetsSliceLen);
     const error = result.error;
 
     let provider = result.provider || chalk.gray('-');
     if (provider === 'google' && daily.label) {
-      provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label + ')')}`;
+      provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
     } else if (provider === 'openai') {
       provider = chalk.green('openai');
     }
 
     const dailyDisplay = error 
-      ? chalk.red(error.slice(0, 20))
+      ? chalk.red(error.slice(0, widths.daily - 2))
       : formatPercent(daily.percent_remaining);
 
     const row = [
       provider,
       dailyDisplay,
       formatReset(daily.reset_time_iso),
-      chalk.yellow(account.slice(0, 25)),
+      chalk.yellow(account.slice(0, accountSliceLen)),
       chalk.dim(presets || '-'),
     ];
 
