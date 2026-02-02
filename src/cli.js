@@ -31,11 +31,30 @@ function formatReset(value) {
   return timeUntilReset(value);
 }
 
+function deduplicateResults(results) {
+  const seen = new Map();
+  
+  for (const result of results) {
+    const key = `${result.provider}-${result.account_id}-${result.daily?.label || 'default'}`;
+    const existing = seen.get(key);
+    
+    if (!existing) {
+      seen.set(key, result);
+    } else if (result.error && !existing.error) {
+      existing.error = result.error;
+    }
+  }
+  
+  return Array.from(seen.values());
+}
+
 function renderQuotaTable(results) {
   if (!results || results.length === 0) {
     console.log(chalk.dim(t('quota_no_results')));
     return;
   }
+
+  const deduped = deduplicateResults(results);
 
   const table = new Table({
     head: [
@@ -49,22 +68,24 @@ function renderQuotaTable(results) {
       t('quota_error'),
     ],
     style: { head: ['cyan'] },
+    wordWrap: true,
+    wrapOnWordBoundary: false,
   });
 
   const activeRows = [];
   const presetRows = [];
 
-  for (const result of results) {
+  for (const result of deduped) {
     const daily = result.daily || {};
     const weekly = result.weekly || {};
     const account = result.account_id || '-';
     const presetsList = result.presets || [];
-    const presets = presetsList.join(', ');
+    const presets = presetsList.join(', ').slice(0, 40);
     const error = result.error || '-';
 
     let provider = result.provider || '-';
     if (provider === 'google' && daily.label) {
-      provider = `google\n(${daily.label})`;
+      provider = `${provider}\n(${daily.label})`;
     }
 
     const row = [
@@ -73,12 +94,12 @@ function renderQuotaTable(results) {
       formatReset(daily.reset_time_iso),
       formatPercent(weekly?.percent_remaining),
       formatReset(weekly?.reset_time_iso),
-      account,
+      account.slice(0, 25),
       presets || '-',
-      error ? chalk.red(error.slice(0, 50)) : '-',
+      error !== '-' ? chalk.red(error.slice(0, 30)) : '-',
     ];
 
-    if (presetsList.some(p => p.includes('Current Active'))) {
+    if (presetsList.some(p => p.includes('Current Active') || p.includes('Antigravity'))) {
       activeRows.push(row);
     } else {
       presetRows.push(row);

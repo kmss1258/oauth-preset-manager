@@ -552,7 +552,19 @@ export class PresetManager {
       const models = data.models || {};
       const results = [];
 
-      for (const [key, modelData] of Object.entries(models)) {
+      const priorityModels = [
+        'gemini-3-pro-high',
+        'gemini-3-pro-low', 
+        'gemini-3-flash',
+        'claude-opus-4-5-thinking',
+        'claude-opus-4-5'
+      ];
+      
+      const modelEntries = Object.entries(models);
+      const priorityEntries = modelEntries.filter(([key]) => priorityModels.includes(key));
+      const entriesToProcess = priorityEntries.length > 0 ? priorityEntries : modelEntries;
+
+      for (const [key, modelData] of entriesToProcess) {
         const quotaInfo = modelData.quotaInfo;
         if (!quotaInfo) continue;
 
@@ -565,14 +577,15 @@ export class PresetManager {
         else if (lowerKey.includes('gpt') || lowerKey.includes('o1')) label = 'GPT/O1';
         else if (modelData.displayName) label = modelData.displayName;
 
-        const remaining = quotaInfo.remainingFraction || 0;
+        const remaining = quotaInfo.remainingFraction ?? 1;
+        const resetTime = quotaInfo.resetTime || null;
 
         results.push({
           provider: 'google',
           account_id: projectId,
           daily: {
             percent_remaining: Math.round(remaining * 100),
-            reset_time_iso: quotaInfo.resetTime,
+            reset_time_iso: resetTime,
             label,
           },
           weekly: null,

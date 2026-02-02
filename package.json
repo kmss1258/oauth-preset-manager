@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/cli.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": ["oauth", "opencode", "preset", "cli", "quota"],
   "author": "",
@@ -19,6 +20,9 @@
     "chalk": "^5.4.1",
     "cli-table3": "^0.6.5",
     "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
   },
   "engines": {
     "node": ">=18.0.0"
