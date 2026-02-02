@@ -171,6 +171,7 @@ function renderQuotaCompact(results, termWidth) {
   console.log();
   console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
   console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
+  console.log(chalk.dim('  ' + t('quota_wide_hint')));
   console.log();
   
   const activeItems = results.filter(r => 
