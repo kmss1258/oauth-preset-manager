@@ -140,29 +140,35 @@ function calculateColWidths(totalWidth) {
   const borderChars = 6;
   const availableWidth = Math.max(60, totalWidth - borderChars);
   
-  if (availableWidth < 80) {
+  if (availableWidth < 100) {
     return {
       provider: 12,
       daily: 16,
       reset: 8,
+      weekly: 0,
+      weekly_reset: 0,
       account: 20,
-      presets: availableWidth - 56,
+      presets: Math.max(20, availableWidth - 76),
     };
-  } else if (availableWidth < 100) {
+  } else if (availableWidth < 120) {
     return {
       provider: 14,
       daily: 18,
       reset: 10,
-      account: 24,
-      presets: availableWidth - 66,
+      weekly: 16,
+      weekly_reset: 10,
+      account: 22,
+      presets: Math.max(20, availableWidth - 100),
     };
   } else {
     return {
       provider: 16,
       daily: 20,
       reset: 10,
+      weekly: 18,
+      weekly_reset: 10,
       account: 28,
-      presets: Math.min(40, availableWidth - 74),
+      presets: Math.min(40, availableWidth - 122),
     };
   }
 }
@@ -181,8 +187,9 @@ function renderQuotaCompact(results, termWidth) {
     !r.presets?.some(p => p.includes('Current Active') || p.includes('Antigravity'))
   );
   
-  const renderItem = (result, index) => {
+  const renderItemWithWeekly = (result, index) => {
     const daily = result.daily || {};
+    const weekly = result.weekly;
     const error = result.error;
     const account = result.account_id || '-';
     const presets = result.presets?.join(', ').slice(0, termWidth - 20) || '-';
@@ -204,10 +211,19 @@ function renderQuotaCompact(results, termWidth) {
       ? chalk.cyan(timeUntilReset(daily.reset_time_iso))
       : chalk.gray('-');
     
-    const line1 = `  ${index + 1}. ${provider.padEnd(18)} ${percent.padStart(4)} ${reset.padStart(6)} ${chalk.yellow(account.slice(0, 20))}`;
+    const weeklyPercent = weekly?.percent_remaining != null
+      ? (weekly.percent_remaining < 20 ? chalk.red : weekly.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${weekly.percent_remaining}%`)
+      : chalk.gray('-');
+    
+    const weeklyReset = weekly?.reset_time_iso
+      ? chalk.cyan(timeUntilReset(weekly.reset_time_iso))
+      : chalk.gray('-');
+    
+    const line1 = `  ${index + 1}. ${provider.padEnd(18)} ${percent.padStart(4)} ${reset.padStart(6)}`;
+    const line1b = `W:${weeklyPercent.padStart(4)} ${weeklyReset.padStart(6)} ${chalk.yellow(account.slice(0, 20))}`;
     const line2 = presets !== '-' ? `     ${chalk.dim(presets)}` : '';
     
-    console.log(line1);
+    console.log(line1 + ' ' + line1b);
     if (line2) console.log(line2);
     console.log();
   };
@@ -215,7 +231,7 @@ function renderQuotaCompact(results, termWidth) {
   if (activeItems.length > 0) {
     console.log(chalk.bold.green('  ⚡ Active Session'));
     console.log();
-    activeItems.forEach((item, i) => renderItem(item, i));
+    activeItems.forEach((item, i) => renderItemWithWeekly(item, i));
   }
   
   if (presetItems.length > 0) {
@@ -225,7 +241,7 @@ function renderQuotaCompact(results, termWidth) {
     }
     console.log(chalk.bold.blue('  📦 Presets'));
     console.log();
-    presetItems.forEach((item, i) => renderItem(item, activeItems.length + i));
+    presetItems.forEach((item, i) => renderItemWithWeekly(item, activeItems.length + i));
   }
 }
 
@@ -250,6 +266,8 @@ function renderQuotaTable(results) {
       chalk.cyan(t('quota_provider')),
       chalk.cyan(t('quota_daily')),
       chalk.cyan(t('quota_reset')),
+      chalk.cyan(t('quota_weekly')),
+      chalk.cyan(t('quota_weekly_reset')),
       chalk.cyan(t('quota_account')),
       chalk.cyan(t('quota_presets')),
     ].map(h => chalk.bold(h)),
@@ -258,7 +276,7 @@ function renderQuotaTable(results) {
       border: ['gray'],
       compact: true,
     },
-    colWidths: [widths.provider, widths.daily, widths.reset, widths.account, widths.presets],
+    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account, widths.presets],
     wordWrap: true,
   });
 
@@ -291,6 +309,8 @@ function renderQuotaTable(results) {
       provider,
       dailyDisplay,
       formatReset(daily.reset_time_iso),
+      formatPercent(weekly?.percent_remaining),
+      formatReset(weekly?.reset_time_iso),
       chalk.yellow(account.slice(0, accountSliceLen)),
       chalk.dim(presets || '-'),
     ];
