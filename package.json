@@ -1,0 +1,26 @@
+{
+  "name": "oauth-preset-manager",
+  "version": "1.0.0",
+  "description": "Manage OpenCode OAuth presets with ease - Node.js Edition",
+  "type": "module",
+  "main": "src/cli.js",
+  "bin": {
+    "opm": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": ["oauth", "opencode", "preset", "cli", "quota"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^7.3.2",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "ora": "^8.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,75 +1,83 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Installing OAuth Preset Manager..."
+REPO_URL="https://github.com/kmss1258/oauth-preset-manager.git"
+INSTALL_DIR="$HOME/.oauth-preset-manager"
+NODE_VERSION_MIN=18
+
+echo "🚀 OPM (OAuth Preset Manager) - Node.js Edition Installer"
 echo ""
 
-# Check Python
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Error: Python 3 is required but not found"
-    echo "Please install Python 3.7 or higher"
-    exit 1
-fi
+check_node() {
+    if ! command -v node &> /dev/null; then
+        echo "❌ Node.js is not installed. Please install Node.js ${NODE_VERSION_MIN}+ first."
+        echo "   Visit: https://nodejs.org/"
+        exit 1
+    fi
+    
+    NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ "$NODE_VERSION" -lt "$NODE_VERSION_MIN" ]; then
+        echo "❌ Node.js version ${NODE_VERSION_MIN}+ required. Current: $(node -v)"
+        exit 1
+    fi
+    
+    echo "✅ Node.js $(node -v) found"
+}
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-echo "✓ Found Python $PYTHON_VERSION"
+install_local() {
+    if [ -f "package.json" ] && [ -d "src" ]; then
+        echo "📦 Installing from local directory..."
+        npm install
+        npm link
+        return 0
+    fi
+    return 1
+}
 
-# Check pip
-if ! python3 -m pip --version &> /dev/null; then
-    echo "❌ Error: pip is required but not found"
-    echo "Please install pip for Python 3"
-    exit 1
-fi
+install_from_git() {
+    echo "📦 Installing from GitHub..."
+    
+    if [ -d "$INSTALL_DIR" ]; then
+        echo "🧹 Cleaning up old installation..."
+        rm -rf "$INSTALL_DIR"
+    fi
+    
+    echo "⬇️  Cloning repository..."
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || {
+        echo "❌ Failed to clone repository"
+        exit 1
+    }
+    
+    cd "$INSTALL_DIR"
+    
+    echo "📦 Installing dependencies..."
+    npm install
+    
+    npm link
+}
 
-echo "✓ Found pip"
-
-# Check git
-if ! command -v git &> /dev/null; then
-    echo "❌ Error: git is required but not found"
-    echo "Please install git"
-    exit 1
-fi
-
-echo "✓ Found git"
-echo ""
-
-# Create temporary directory
-TEMP_DIR=$(mktemp -d)
-echo "📥 Cloning repository to $TEMP_DIR..."
-
-# Clone the repository
-git clone -q https://github.com/kmss1258/oauth-preset-manager.git "$TEMP_DIR"
-
-echo "✓ Repository cloned"
-echo ""
-
-echo "📦 Installing package..."
-
-# Install (or upgrade if already installed)
-python3 -m pip install --user --upgrade -q "$TEMP_DIR"
-
-# Clean up
-rm -rf "$TEMP_DIR"
-
-echo "✓ Package installed"
-echo ""
-
-# Check installation
-if command -v opm &> /dev/null; then
-    echo "✅ Successfully installed OAuth Preset Manager!"
+main() {
+    check_node
+    
+    if install_local; then
+        echo ""
+        echo "✅ OPM installed successfully from local directory!"
+    else
+        install_from_git
+        echo ""
+        echo "✅ OPM installed successfully!"
+    fi
+    
+    echo ""
+    echo "🎉 Installation complete!"
     echo ""
     echo "Usage:"
     echo "  opm              # Interactive mode"
     echo "  opm save <name>  # Save current auth as preset"
     echo "  opm switch <name> # Switch to preset"
-    echo "  opm quota         # Show quota for all presets"
+    echo "  opm quota        # Show OAuth quota (or: opm q)"
     echo ""
     echo "Run 'opm' to get started!"
-else
-    echo "⚠️  Installation complete, but 'opm' not found in PATH"
-    echo ""
-    echo "Please add the following to your PATH:"
-    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-    echo "Add this line to your ~/.bashrc or ~/.zshrc and restart your shell"
-fi
+}
+
+main "$@"

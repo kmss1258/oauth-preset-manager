@@ -1,8 +1,8 @@
-# OAuth Preset Manager (OPM)
-
-![OPM Hero](hero1.png)
+# OAuth Preset Manager (OPM) - Node.js Edition
 
 **Manage your OAuth tokens like a pro.** Switch between multiple OpenAI/Google accounts instantly in OpenCode, check detailed quota usage, and keep your development flow uninterrupted.
+
+Now rewritten in **Node.js** for better performance and cross-platform compatibility!
 
 ---
 
@@ -26,26 +26,29 @@ opm
 
 - **Instant Switching**: Swap `auth.json` configurations with a single command.
 - **Quota Dashboard**: View real-time quota usage for OpenAI & Google (Antigravity) accounts.
-  - Supports detailed breakdown for Antigravity models (Flash, Pro, Premium).
+  - Supports detailed breakdown for Antigravity models (Flash, Pro, Claude).
   - Visual progress bars and reset timers.
 - **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
-- **TUI Interface**: Interactive terminal UI for easy management and monitoring.
+- **Interactive CLI**: Beautiful interactive prompts with arrow key navigation.
+- **Multi-language**: English & Korean support (auto-detected).
 
 ## 🚀 Installation
 
-Install directly from the repository:
+### Requirements
+- Node.js 18+
+- Git
 
+### Quick Install
 ```bash
-# Clone and install
-git clone https://github.com/kmss1258/oauth-preset-manager.git
-cd oauth-preset-manager
-./install.sh
+curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash
 ```
 
-Or install manually with pip:
-
+### Manual Install
 ```bash
-pip install .
+git clone https://github.com/kmss1258/oauth-preset-manager.git
+cd oauth-preset-manager
+npm install
+npm link
 ```
 
 ## 📖 Usage
@@ -81,8 +84,24 @@ opm save <new_preset_name>
 
 ## 🛠 Configuration
 
-Presets are stored in `~/.local/share/opencode/presets/`.
+Presets are stored in `~/.config/oauth-preset-manager/presets/`.
 The tool automatically detects your OpenCode `auth.json` location.
+
+### Environment Variables
+- `OPM_LANG`: Set language (`ko` or `en`)
+
+## 📝 Project Structure
+
+```
+.
+├── src/
+│   ├── cli.js          # Main CLI entry point
+│   ├── core.js         # PresetManager and quota logic
+│   └── i18n.js         # Translations (KO/EN)
+├── package.json        # Node.js package config
+├── install.sh          # Quick installer
+└── README.md
+```
 
 ## 🤝 Contributing
 

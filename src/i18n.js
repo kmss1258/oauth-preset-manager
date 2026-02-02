@@ -1,0 +1,152 @@
+import { env } from 'process';
+
+const TRANSLATIONS = {
+  ko: {
+    current_preset: '현재 프리셋',
+    last_used_preset: '마지막 사용 프리셋',
+    no_preset_active: '활성화된 프리셋 없음',
+    auth_mismatch: '현재 auth.json이 저장된 프리셋과 일치하지 않습니다',
+    no_presets_found: '프리셋을 찾을 수 없습니다.',
+    select_preset: '전환할 프리셋 선택:',
+    save_new_preset: '💾 새 프리셋 저장',
+    view_description: '📝 설명 보기',
+    view_quota: '📊 할당량(Quota) 보기',
+    delete_preset: '🗑️  프리셋 삭제',
+    exit: '❌ 종료',
+    enter_preset_name: '프리셋 이름 입력:',
+    enter_description: '설명 입력 (선택사항):',
+    watched_services_prompt: '감시할 서비스:',
+    switched_to: '프리셋으로 전환했습니다',
+    saved_preset: '프리셋을 저장했습니다',
+    deleted_preset: '프리셋을 삭제했습니다',
+    no_changes_detected: '변경 사항이 감지되지 않았습니다. Auth가 이미 프리셋과 동일합니다.',
+    added: '추가',
+    removed: '제거',
+    modified: '수정',
+    from: '원본',
+    to: '대상',
+    backup: '백업',
+    updated_services: '🔄 업데이트된 서비스:',
+    save_current_as_preset: '현재 인증을 프리셋으로 저장하시겠습니까?',
+    confirm_delete: "'{name}'을(를) 정말 삭제하시겠습니까?",
+    overwrite_current_preset: '선택한 프리셋 ({preset})이 현재 활성화되어 있지 않습니다. 이 프리셋으로 덮어쓰시겠습니까?',
+    select_preset_to_delete: '삭제할 프리셋 선택:',
+    preset: '프리셋',
+    services: '서비스',
+    description: '설명',
+    last_used: '마지막 사용',
+    watched: '감시 중',
+    error: '오류',
+    preset_not_found: '프리셋을 찾을 수 없습니다',
+    auth_file_not_found: '인증 파일을 찾을 수 없습니다',
+    found_opencode_auth: 'OpenCode 인증을 찾았습니다',
+    auth_not_found: '기본 위치에서 OpenCode auth.json을 찾을 수 없습니다',
+    enter_auth_path: 'OpenCode auth.json 경로를 입력하세요:',
+    invalid_path: '잘못된 경로입니다. 종료합니다.',
+    auth_path_set: '인증 경로가 설정되었습니다',
+    quota_title: 'OAuth Preset Quotas',
+    quota_no_results: '할당량 데이터가 없습니다',
+    quota_provider: 'Provider',
+    quota_account: 'Account',
+    quota_daily: 'Daily',
+    quota_daily_reset: 'Reset',
+    quota_weekly: 'Weekly',
+    quota_weekly_reset: 'Reset',
+    quota_presets: 'Using Presets',
+    quota_error: 'Error',
+    name_required: '이름은 필수입니다',
+    loading_quota: '할당량 조회 중...',
+  },
+  en: {
+    current_preset: 'Current Preset',
+    last_used_preset: 'Last Used Preset',
+    no_preset_active: 'No preset active',
+    auth_mismatch: 'Current auth.json does not match the saved preset',
+    no_presets_found: 'No presets found.',
+    select_preset: 'Select preset to switch:',
+    save_new_preset: '💾 Save New Preset',
+    view_description: '📝 View Description',
+    view_quota: '📊 View Quota',
+    delete_preset: '🗑️  Delete Preset',
+    exit: '❌ Exit',
+    enter_preset_name: 'Enter preset name:',
+    enter_description: 'Enter description (optional):',
+    watched_services_prompt: 'Services to watch:',
+    switched_to: 'Switched to preset',
+    saved_preset: 'Saved preset',
+    deleted_preset: 'Deleted preset',
+    no_changes_detected: 'No changes detected. Auth is already identical to preset.',
+    added: 'Added',
+    removed: 'Removed',
+    modified: 'Modified',
+    from: 'From',
+    to: 'To',
+    backup: 'Backup',
+    updated_services: '🔄 Updated services:',
+    save_current_as_preset: 'Save current auth as preset?',
+    confirm_delete: "Are you sure you want to delete '{name}'?",
+    overwrite_current_preset: 'The selected preset ({preset}) is not currently active. Overwrite with this preset?',
+    select_preset_to_delete: 'Select preset to delete:',
+    preset: 'Preset',
+    services: 'Services',
+    description: 'Description',
+    last_used: 'Last Used',
+    watched: 'Watched',
+    error: 'Error',
+    preset_not_found: 'Preset not found',
+    auth_file_not_found: 'Auth file not found',
+    found_opencode_auth: 'Found OpenCode auth',
+    auth_not_found: 'Could not find OpenCode auth.json at default location',
+    enter_auth_path: 'Enter OpenCode auth.json path:',
+    invalid_path: 'Invalid path. Exiting.',
+    auth_path_set: 'Auth path set',
+    quota_title: 'OAuth Preset Quotas',
+    quota_no_results: 'No quota data available',
+    quota_provider: 'Provider',
+    quota_account: 'Account',
+    quota_daily: 'Daily',
+    quota_daily_reset: 'Reset',
+    quota_weekly: 'Weekly',
+    quota_weekly_reset: 'Reset',
+    quota_presets: 'Using Presets',
+    quota_error: 'Error',
+    name_required: 'Name is required',
+    loading_quota: 'Loading quota...',
+  },
+};
+
+let currentLanguage = detectLanguage();
+
+function detectLanguage() {
+  const envLang = (env.OPM_LANG || '').toLowerCase();
+  if (envLang === 'ko' || envLang === 'en') {
+    return envLang;
+  }
+
+  const sysLang = (env.LANG || env.LANGUAGE || '').toLowerCase();
+  if (sysLang.startsWith('ko')) {
+    return 'ko';
+  }
+
+  return 'ko';
+}
+
+export function setLanguage(lang) {
+  if (TRANSLATIONS[lang]) {
+    currentLanguage = lang;
+  }
+}
+
+export function t(key, kwargs = {}) {
+  let translation = TRANSLATIONS[currentLanguage]?.[key];
+  
+  if (!translation) {
+    translation = TRANSLATIONS.en[key];
+  }
+  
+  if (!translation) {
+    return key;
+  }
+
+  return translation.replace(/\{\{(\w+)\}\}/g, (match, key) => kwargs[key] ?? match);
+}
