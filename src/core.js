@@ -552,30 +552,22 @@ export class PresetManager {
       const models = data.models || {};
       const results = [];
 
-      const priorityModels = [
-        'gemini-3-pro-high',
-        'gemini-3-pro-low', 
-        'gemini-3-flash',
-        'claude-opus-4-5-thinking',
-        'claude-opus-4-5'
-      ];
-      
       const modelEntries = Object.entries(models);
-      const priorityEntries = modelEntries.filter(([key]) => priorityModels.includes(key));
-      const entriesToProcess = priorityEntries.length > 0 ? priorityEntries : modelEntries;
 
-      for (const [key, modelData] of entriesToProcess) {
+      for (const [key, modelData] of modelEntries) {
         const quotaInfo = modelData.quotaInfo;
         if (!quotaInfo) continue;
+        if (key.toLowerCase().startsWith('chat_')) continue;
 
-        let label = key;
+        let label = modelData.displayName || key;
         const lowerKey = key.toLowerCase();
 
         if (lowerKey.includes('flash')) label = 'G3Flash';
         else if (lowerKey.includes('pro')) label = 'G3Pro';
+        else if (lowerKey.includes('claude') && lowerKey.includes('opus')) label = 'Claude-Opus';
+        else if (lowerKey.includes('claude') && lowerKey.includes('sonnet')) label = 'Claude-Sonnet';
         else if (lowerKey.includes('claude')) label = 'Claude';
         else if (lowerKey.includes('gpt') || lowerKey.includes('o1')) label = 'GPT/O1';
-        else if (modelData.displayName) label = modelData.displayName;
 
         const remaining = quotaInfo.remainingFraction ?? 1;
         const resetTime = quotaInfo.resetTime || null;

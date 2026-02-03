@@ -7,6 +7,7 @@ import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import readline from 'readline';
 import { PresetManager, timeUntilReset } from './core.js';
 import { t } from './i18n.js';
 
@@ -91,6 +92,18 @@ function printMenuSection() {
   console.log();
 }
 
+function enableEscToExit() {
+  if (!process.stdin.isTTY) return;
+  readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.setRawMode) process.stdin.setRawMode(true);
+  process.stdin.on('keypress', (_str, key) => {
+    if (key?.name === 'escape') {
+      console.log();
+      process.exit(0);
+    }
+  });
+}
+
 function formatPercent(value) {
   if (value == null) return chalk.gray('-');
 
@@ -173,33 +186,22 @@ function calculateColWidths(totalWidth) {
   }
 }
 
-function renderQuotaCompact(results, termWidth) {
+function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
   console.log();
   console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
   console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
   console.log(chalk.dim('  ' + t('quota_wide_hint')));
   console.log();
   
-  const activeItems = results.filter(r => 
-    r.presets?.some(p => p.includes('Current Active') || p.includes('Antigravity'))
-  );
-  const presetItems = results.filter(r => 
-    !r.presets?.some(p => p.includes('Current Active') || p.includes('Antigravity'))
-  );
+  const openaiItems = results.filter(r => r.provider === 'openai');
+  const googleItems = results.filter(r => r.provider === 'google');
   
-  const renderItemWithWeekly = (result, index) => {
+  const renderOpenAIItem = (result, index) => {
     const daily = result.daily || {};
     const weekly = result.weekly;
     const error = result.error;
     const account = result.account_id || '-';
     const presets = result.presets?.join(', ').slice(0, termWidth - 20) || '-';
-    
-    let provider = result.provider || '-';
-    if (provider === 'google' && daily.label) {
-      provider = `${chalk.blue('google')}(${chalk.dim(daily.label)})`;
-    } else if (provider === 'openai') {
-      provider = chalk.green('openai');
-    }
     
     const percent = error 
       ? chalk.red('ERR')
@@ -219,7 +221,7 @@ function renderQuotaCompact(results, termWidth) {
       ? chalk.cyan(timeUntilReset(weekly.reset_time_iso))
       : chalk.gray('-');
     
-    const line1 = `  ${index + 1}. ${provider.padEnd(18)} ${percent.padStart(4)} ${reset.padStart(6)}`;
+    const line1 = `  ${index + 1}. ${chalk.green('openai').padEnd(18)} ${percent.padStart(4)} ${reset.padStart(6)}`;
     const line1b = `W:${weeklyPercent.padStart(4)} ${weeklyReset.padStart(6)} ${chalk.yellow(account.slice(0, 20))}`;
     const line2 = presets !== '-' ? `     ${chalk.dim(presets)}` : '';
     
@@ -228,20 +230,43 @@ function renderQuotaCompact(results, termWidth) {
     console.log();
   };
   
-  if (activeItems.length > 0) {
-    console.log(chalk.bold.green('  ⚡ Active Session'));
+  const renderGoogleSummary = () => {
+    if (googleItems.length === 0) return;
+    
+    const account = googleItems[0]?.account_id || '-';
+    const presets = googleItems[0]?.presets?.join(', ').slice(0, termWidth - 20) || '-';
+    
+    const avgPercent = Math.round(
+      googleItems.reduce((sum, item) => sum + (item.daily?.percent_remaining || 0), 0) / googleItems.length
+    );
+    
+    const lowModels = googleItems.filter(i => (i.daily?.percent_remaining || 100) < 50).map(i => i.daily?.label).filter(Boolean);
+    
+    if (showGoogleDetail) {
+      console.log(chalk.bold.yellow(`  📂 Google Models (${googleItems.length} models) [Expanded]`));
+    } else {
+      console.log(chalk.bold.blue(`  📦 Google Models (${googleItems.length} models)`));
+      console.log(`     ${chalk.blue('google')} Avg: ${avgPercent}% ${chalk.yellow(account.slice(0, 20))}`);
+      if (lowModels.length > 0) {
+        console.log(`     ${chalk.yellow('⚠️ Low:')} ${lowModels.slice(0, 3).join(', ')}${lowModels.length > 3 ? '...' : ''}`);
+      }
+      console.log(`     ${chalk.dim(presets)}`);
+    }
     console.log();
-    activeItems.forEach((item, i) => renderItemWithWeekly(item, i));
+  };
+  
+  if (openaiItems.length > 0) {
+    console.log(chalk.bold.green('  ⚡ OpenAI'));
+    console.log();
+    openaiItems.forEach((item, i) => renderOpenAIItem(item, i));
   }
   
-  if (presetItems.length > 0) {
-    if (activeItems.length > 0) {
+  if (googleItems.length > 0) {
+    if (openaiItems.length > 0) {
       console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
       console.log();
     }
-    console.log(chalk.bold.blue('  📦 Presets'));
-    console.log();
-    presetItems.forEach((item, i) => renderItemWithWeekly(item, activeItems.length + i));
+    renderGoogleSummary();
   }
 }
 
@@ -547,6 +572,127 @@ async function cmdSwitch(manager, name) {
   }
 }
 
+async function renderGoogleModelsDetail(results, termWidth) {
+  const googleItems = results.filter(r => r.provider === 'google');
+  if (googleItems.length === 0) return;
+  
+  console.log();
+  console.log(chalk.blue.bold('  📦 Google Models Detail'));
+  console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
+  console.log();
+  
+  googleItems.forEach((item, i) => {
+    const daily = item.daily || {};
+    const percent = daily.percent_remaining != null
+      ? (daily.percent_remaining < 20 ? chalk.red : daily.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${daily.percent_remaining}%`.padStart(4))
+      : chalk.gray('-');
+    
+    const reset = daily.reset_time_iso
+      ? chalk.cyan(timeUntilReset(daily.reset_time_iso).padStart(6))
+      : chalk.gray('-'.padStart(6));
+    
+    const label = daily.label || 'unknown';
+    
+    console.log(`  ${i + 1}. ${chalk.blue(label.padEnd(18))} ${percent} ${reset}`);
+  });
+  console.log();
+}
+
+async function renderQuotaTableWithToggle(results, showGoogle = true) {
+  const termWidth = getTerminalWidth();
+  const openaiItems = results.filter(r => r.provider === 'openai');
+  const googleItems = results.filter(r => r.provider === 'google');
+  
+  console.log();
+  console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
+  console.log();
+  
+  const widths = calculateColWidths(termWidth);
+  
+  const table = new Table({
+    head: [
+      chalk.cyan(t('quota_provider')),
+      chalk.cyan(t('quota_daily')),
+      chalk.cyan(t('quota_reset')),
+      chalk.cyan(t('quota_weekly')),
+      chalk.cyan(t('quota_weekly_reset')),
+      chalk.cyan(t('quota_account')),
+      chalk.cyan(t('quota_presets')),
+    ].map(h => chalk.bold(h)),
+    style: { 
+      head: [], 
+      border: ['gray'],
+      compact: true,
+    },
+    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account, widths.presets],
+    wordWrap: true,
+  });
+  
+  const accountSliceLen = Math.max(15, widths.account - 3);
+  const presetsSliceLen = Math.max(20, widths.presets - 2);
+  
+  openaiItems.forEach(result => {
+    const daily = result.daily || {};
+    const weekly = result.weekly;
+    const account = result.account_id || chalk.gray('-');
+    const presetsList = result.presets || [];
+    const presets = presetsList.join(', ').slice(0, presetsSliceLen);
+    const error = result.error;
+    
+    const dailyDisplay = error 
+      ? chalk.red(error.slice(0, widths.daily - 2))
+      : formatPercent(daily.percent_remaining);
+    
+    table.push([
+      chalk.green('openai'),
+      dailyDisplay,
+      formatReset(daily.reset_time_iso),
+      formatPercent(weekly?.percent_remaining),
+      formatReset(weekly?.reset_time_iso),
+      chalk.yellow(account.slice(0, accountSliceLen)),
+      chalk.dim(presets || '-'),
+    ]);
+  });
+  
+  if (showGoogle && googleItems.length > 0) {
+    if (openaiItems.length > 0) table.push([]);
+    
+    googleItems.forEach(result => {
+      const daily = result.daily || {};
+      const account = result.account_id || chalk.gray('-');
+      const presetsList = result.presets || [];
+      const presets = presetsList.join(', ').slice(0, presetsSliceLen);
+      
+      let provider = chalk.blue('google');
+      if (daily.label) {
+        provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
+      }
+      
+      table.push([
+        provider,
+        formatPercent(daily.percent_remaining),
+        formatReset(daily.reset_time_iso),
+        chalk.gray('-'),
+        chalk.gray('-'),
+        chalk.yellow(account.slice(0, accountSliceLen)),
+        chalk.dim(presets || '-'),
+      ]);
+    });
+  }
+  
+  console.log(table.toString());
+  console.log();
+  
+  if (googleItems.length > 0) {
+    if (showGoogle) {
+      console.log(chalk.yellow(`  📂 Google models: ${googleItems.length} models shown`));
+    } else {
+      console.log(chalk.blue(`  📦 Google models: ${googleItems.length} models hidden`));
+    }
+    console.log();
+  }
+}
+
 async function cmdQuota(manager) {
   console.clear();
   printHeader();
@@ -555,9 +701,65 @@ async function cmdQuota(manager) {
   
   try {
     const results = await manager.collectAllQuota();
-    console.clear();
-    printHeader();
-    renderQuotaTable(results);
+    const termWidth = getTerminalWidth();
+    let showGoogleDetail = false;
+    let showGoogleInTable = false;
+    const googleCount = results.filter(r => r.provider === 'google').length;
+    
+    while (true) {
+      console.clear();
+      printHeader();
+      
+      if (termWidth >= 100) {
+        await renderQuotaTableWithToggle(results, showGoogleInTable);
+      } else {
+        renderQuotaCompact(results, termWidth, showGoogleDetail);
+        if (showGoogleDetail && googleCount > 0) {
+          await renderGoogleModelsDetail(results, termWidth);
+        }
+      }
+      
+      if (googleCount === 0) {
+        await input({ message: chalk.dim('  Press Enter to exit...') });
+        break;
+      }
+      
+      const choices = [];
+      
+      if (termWidth >= 100) {
+        choices.push({
+          name: showGoogleInTable
+            ? chalk.yellow(`  📂 Hide Google models (${googleCount} models)`)
+            : chalk.blue(`  📂 Show Google models (${googleCount} models)`),
+          value: 'toggle_google_table'
+        });
+      } else {
+        choices.push({
+          name: showGoogleDetail 
+            ? chalk.yellow('  📂 Collapse Google models')
+            : chalk.blue(`  📂 Expand Google models (${googleCount} models)`),
+          value: 'toggle_google_compact'
+        });
+      }
+      
+      choices.push({
+        name: chalk.gray('  ❌ Exit'),
+        value: 'exit'
+      });
+      
+      const action = await select({
+        message: chalk.cyan('  ➜ Select action:'),
+        choices
+      });
+      
+      if (action === 'exit') {
+        break;
+      } else if (action === 'toggle_google_compact') {
+        showGoogleDetail = !showGoogleDetail;
+      } else if (action === 'toggle_google_table') {
+        showGoogleInTable = !showGoogleInTable;
+      }
+    }
   } catch (e) {
     console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
   }
@@ -717,6 +919,7 @@ async function interactiveMode(manager) {
 }
 
 async function main() {
+  enableEscToExit();
   const manager = new PresetManager();
   await manager.init();
 
