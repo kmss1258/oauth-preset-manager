@@ -194,6 +194,46 @@ export class PresetManager {
     };
   }
 
+  async overwritePresetFromCurrent(name, autoBackup = true) {
+    const presetPath = join(this.presetsDir, `${name}.json`);
+
+    try {
+      await fs.access(presetPath);
+    } catch {
+      throw new Error(`Preset not found: ${name}`);
+    }
+
+    const authPath = this.getAuthPath();
+    try {
+      await fs.access(authPath);
+    } catch {
+      throw new Error(`Auth file not found: ${authPath}`);
+    }
+
+    let backupPath = null;
+    if (autoBackup) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
+      backupPath = join(this.backupsDir, `preset_${name}_${timestamp}.json`);
+      await fs.copyFile(presetPath, backupPath);
+    }
+
+    await fs.copyFile(authPath, presetPath);
+
+    const now = new Date().toISOString();
+    if (this.config.presets[name]) {
+      this.config.presets[name].last_used = now;
+    }
+    this.config.current_preset = name;
+    await this._saveConfig();
+
+    return {
+      success: true,
+      preset_name: name,
+      preset_path: presetPath,
+      backup_path: backupPath,
+    };
+  }
+
   async listPresets() {
     const presets = [];
     

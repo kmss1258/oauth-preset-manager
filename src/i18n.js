@@ -29,7 +29,8 @@ const TRANSLATIONS = {
     updated_services: '🔄 업데이트된 서비스:',
     save_current_as_preset: '현재 인증을 프리셋으로 저장하시겠습니까?',
     confirm_delete: "'{name}'을(를) 정말 삭제하시겠습니까?",
-    overwrite_current_preset: '선택한 프리셋 ({preset})이 현재 활성화되어 있지 않습니다. 이 프리셋으로 덮어쓰시겠습니까?',
+    overwrite_current_preset: '현재 auth.json이 프리셋 ({preset})과 다릅니다. 현재 auth({active})로 프리셋을 덮어쓸까요?',
+    preset_overwritten: '현재 auth로 프리셋을 덮어썼습니다: {name}',
     select_preset_to_delete: '삭제할 프리셋 선택:',
     preset: '프리셋',
     services: '서비스',
@@ -86,7 +87,8 @@ const TRANSLATIONS = {
     updated_services: '🔄 Updated services:',
     save_current_as_preset: 'Save current auth as preset?',
     confirm_delete: "Are you sure you want to delete '{name}'?",
-    overwrite_current_preset: 'The selected preset ({preset}) is not currently active. Overwrite with this preset?',
+    overwrite_current_preset: 'Current auth.json differs from preset ({preset}). Overwrite preset with current auth ({active})?',
+    preset_overwritten: 'Overwrote preset with current auth: {name}',
     select_preset_to_delete: 'Select preset to delete:',
     preset: 'Preset',
     services: 'Services',
@@ -150,5 +152,7 @@ export function t(key, kwargs = {}) {
     return key;
   }
 
-  return translation.replace(/\{\{(\w+)\}\}/g, (match, key) => kwargs[key] ?? match);
+  return translation
+    .replace(/\{\{(\w+)\}\}/g, (match, key) => kwargs[key] ?? match)
+    .replace(/\{(\w+)\}/g, (match, key) => kwargs[key] ?? match);
 }

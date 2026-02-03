@@ -881,8 +881,14 @@ async function interactiveMode(manager) {
       mismatchPrompted = true;
       if (overwrite) {
         try {
-          const result = await manager.switchPreset(current);
-          printSwitchResult(result);
+          const result = await manager.overwritePresetFromCurrent(current);
+          const backupLine = result.backup_path
+            ? `${t('backup')}: ${result.backup_path.replace(homedir(), '~')}`
+            : `${t('backup')}: -`;
+          printInfoBox('✓ Success', [
+            t('preset_overwritten', { name: current }),
+            backupLine,
+          ]);
           await input({ message: chalk.dim('Press Enter to continue...') });
           continue;
         } catch (e) {
