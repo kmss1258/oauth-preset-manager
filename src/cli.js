@@ -121,6 +121,26 @@ function formatPercent(value) {
   return `${barFilled}${barEmpty} ${color(value.toString().padStart(3) + '%')}`;
 }
 
+function formatPercentTwoLine(value) {
+  if (value == null) return { bar: chalk.gray('-'), percent: chalk.gray('-') };
+
+  const width = 10;
+  const filledLen = Math.max(0, Math.min(width, Math.round(value / 100 * width)));
+  const emptyLen = width - filledLen;
+
+  const barFilled = chalk.green('█'.repeat(filledLen));
+  const barEmpty = chalk.gray('░'.repeat(emptyLen));
+
+  let color = chalk.green;
+  if (value < 20) color = chalk.red;
+  else if (value < 50) color = chalk.yellow;
+
+  return {
+    bar: `${barFilled}${barEmpty}`,
+    percent: color((value.toString() + '%').padStart(width))
+  };
+}
+
 function formatReset(value) {
   if (!value) return chalk.gray('-');
   const time = timeUntilReset(value);
@@ -153,7 +173,7 @@ function calculateColWidths(totalWidth) {
   const borderChars = 6;
   const availableWidth = Math.max(60, totalWidth - borderChars);
   
-  if (availableWidth < 100) {
+  if (availableWidth < 80) {
     return {
       provider: 12,
       daily: 16,
@@ -163,25 +183,25 @@ function calculateColWidths(totalWidth) {
       account: 20,
       presets: Math.max(20, availableWidth - 76),
     };
-  } else if (availableWidth < 120) {
+  } else if (availableWidth < 100) {
     return {
       provider: 14,
-      daily: 18,
-      reset: 10,
-      weekly: 16,
-      weekly_reset: 10,
-      account: 22,
-      presets: Math.max(20, availableWidth - 100),
+      daily: 12,
+      reset: 8,
+      weekly: 12,
+      weekly_reset: 8,
+      account: 24,
+      presets: Math.max(20, availableWidth - 88),
     };
   } else {
     return {
       provider: 16,
-      daily: 20,
-      reset: 10,
-      weekly: 18,
-      weekly_reset: 10,
+      daily: 12,
+      reset: 8,
+      weekly: 12,
+      weekly_reset: 8,
       account: 28,
-      presets: Math.min(40, availableWidth - 122),
+      presets: Math.min(40, availableWidth - 116),
     };
   }
 }
@@ -196,69 +216,56 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
   const openaiItems = results.filter(r => r.provider === 'openai');
   const googleItems = results.filter(r => r.provider === 'google');
   
-  const renderOpenAIItem = (result, index) => {
+  const formatQuotaRow = (result, index) => {
     const daily = result.daily || {};
     const weekly = result.weekly;
     const error = result.error;
-    const account = result.account_id || '-';
-    const presets = result.presets?.join(', ').slice(0, termWidth - 20) || '-';
+    const accountId = result.account_id || '';
+    const nickname = result.nickname || '';
     
-    const percent = error 
-      ? chalk.red('ERR')
-      : (daily.percent_remaining != null 
-          ? (daily.percent_remaining < 20 ? chalk.red : daily.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${daily.percent_remaining}%`)
-          : chalk.gray('-'));
-    
-    const reset = daily.reset_time_iso 
-      ? chalk.cyan(timeUntilReset(daily.reset_time_iso))
-      : chalk.gray('-');
-    
-    const weeklyPercent = weekly?.percent_remaining != null
-      ? (weekly.percent_remaining < 20 ? chalk.red : weekly.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${weekly.percent_remaining}%`)
-      : chalk.gray('-');
-    
-    const weeklyReset = weekly?.reset_time_iso
-      ? chalk.cyan(timeUntilReset(weekly.reset_time_iso))
-      : chalk.gray('-');
-    
-    const line1 = `  ${index + 1}. ${chalk.green('openai').padEnd(18)} ${percent.padStart(4)} ${reset.padStart(6)}`;
-    const line1b = `W:${weeklyPercent.padStart(4)} ${weeklyReset.padStart(6)} ${chalk.yellow(account.slice(0, 20))}`;
-    const line2 = presets !== '-' ? `     ${chalk.dim(presets)}` : '';
-    
-    console.log(line1 + ' ' + line1b);
-    if (line2) console.log(line2);
-    console.log();
-  };
-  
-  const renderGoogleSummary = () => {
-    if (googleItems.length === 0) return;
-    
-    const account = googleItems[0]?.account_id || '-';
-    const presets = googleItems[0]?.presets?.join(', ').slice(0, termWidth - 20) || '-';
-    
-    const avgPercent = Math.round(
-      googleItems.reduce((sum, item) => sum + (item.daily?.percent_remaining || 0), 0) / googleItems.length
-    );
-    
-    const lowModels = googleItems.filter(i => (i.daily?.percent_remaining || 100) < 50).map(i => i.daily?.label).filter(Boolean);
-    
-    if (showGoogleDetail) {
-      console.log(chalk.bold.yellow(`  📂 Google Models (${googleItems.length} models) [Expanded]`));
-    } else {
-      console.log(chalk.bold.blue(`  📦 Google Models (${googleItems.length} models)`));
-      console.log(`     ${chalk.blue('google')} Avg: ${avgPercent}% ${chalk.yellow(account.slice(0, 20))}`);
-      if (lowModels.length > 0) {
-        console.log(`     ${chalk.yellow('⚠️ Low:')} ${lowModels.slice(0, 3).join(', ')}${lowModels.length > 3 ? '...' : ''}`);
-      }
-      console.log(`     ${chalk.dim(presets)}`);
+    let providerLine = '';
+    if (result.provider === 'openai') {
+      providerLine = chalk.green.bold('openai');
+    } else if (result.provider === 'google') {
+      const label = daily.label || '';
+      providerLine = chalk.blue.bold('google') + (label ? chalk.dim(` ${label}`) : '');
     }
+    
+    const accountLine = nickname 
+      ? chalk.yellow(nickname) + chalk.dim(` (${accountId})`)
+      : chalk.yellow(accountId);
+    
+    let quotaLine = '';
+    if (error) {
+      quotaLine = chalk.red(`  Error: ${error.slice(0, 60)}`);
+    } else {
+      const dailyPercent = daily.percent_remaining != null 
+        ? (daily.percent_remaining < 20 ? chalk.red : daily.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${daily.percent_remaining}%`.padStart(3))
+        : chalk.gray('-  ');
+      const dailyReset = daily.reset_time_iso 
+        ? chalk.cyan(timeUntilReset(daily.reset_time_iso).padStart(6))
+        : chalk.gray('-     ');
+      
+      const weeklyPercent = weekly?.percent_remaining != null
+        ? (weekly.percent_remaining < 20 ? chalk.red : weekly.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${weekly.percent_remaining}%`.padStart(3))
+        : chalk.gray('-  ');
+      const weeklyReset = weekly?.reset_time_iso
+        ? chalk.cyan(timeUntilReset(weekly.reset_time_iso).padStart(6))
+        : chalk.gray('-     ');
+      
+      quotaLine = `  ${chalk.dim('Daily:')} ${dailyPercent} ${dailyReset}  ${chalk.dim('Weekly:')} ${weeklyPercent} ${weeklyReset}`;
+    }
+    
+    console.log(`  ${index + 1}. ${providerLine}`);
+    console.log(`     ${accountLine}`);
+    console.log(quotaLine);
     console.log();
   };
   
   if (openaiItems.length > 0) {
     console.log(chalk.bold.green('  ⚡ OpenAI'));
     console.log();
-    openaiItems.forEach((item, i) => renderOpenAIItem(item, i));
+    openaiItems.forEach((result, i) => formatQuotaRow(result, i));
   }
   
   if (googleItems.length > 0) {
@@ -266,7 +273,27 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
       console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
       console.log();
     }
-    renderGoogleSummary();
+    
+    if (showGoogleDetail) {
+      console.log(chalk.bold.blue(`  📦 Google (${googleItems.length} models)`));
+      console.log();
+      googleItems.forEach((result, i) => formatQuotaRow(result, i));
+    } else {
+      const accountId = googleItems[0]?.account_id || '';
+      const nickname = googleItems[0]?.nickname || '';
+      const accountDisplay = nickname 
+        ? chalk.yellow(nickname) + chalk.dim(` (${accountId})`)
+        : chalk.yellow(accountId);
+      const avgPercent = Math.round(
+        googleItems.reduce((sum, item) => sum + (item.daily?.percent_remaining || 0), 0) / googleItems.length
+      );
+      const lowModels = googleItems.filter(i => (i.daily?.percent_remaining || 100) < 50).map(i => i.daily?.label).filter(Boolean);
+      
+      console.log(chalk.bold.blue(`  📦 Google (${googleItems.length} models)`));
+      console.log(`     ${accountDisplay}`);
+      console.log(`     ${chalk.blue('Avg:')} ${avgPercent}%  ${lowModels.length > 0 ? chalk.yellow(`⚠️ Low: ${lowModels.slice(0, 3).join(', ')}`) : ''}`);
+      console.log();
+    }
   }
 }
 
@@ -279,7 +306,7 @@ function renderQuotaTable(results) {
   const deduped = deduplicateResults(results);
   const termWidth = getTerminalWidth();
   
-  if (termWidth < 100) {
+  if (termWidth < 80) {
     renderQuotaCompact(deduped, termWidth);
     return;
   }
@@ -308,13 +335,16 @@ function renderQuotaTable(results) {
   const activeRows = [];
   const presetRows = [];
 
-  const accountSliceLen = Math.max(15, widths.account - 3);
   const presetsSliceLen = Math.max(20, widths.presets - 2);
 
   for (const result of deduped) {
     const daily = result.daily || {};
     const weekly = result.weekly;
-    const account = result.account_id || chalk.gray('-');
+    const accountId = result.account_id || '';
+    const nickname = result.nickname;
+    const accountDisplay = nickname 
+      ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
+      : chalk.yellow(accountId);
     const presetsList = result.presets || [];
     const presets = presetsList.join(', ').slice(0, presetsSliceLen);
     const error = result.error;
@@ -326,19 +356,31 @@ function renderQuotaTable(results) {
       provider = chalk.green('openai');
     }
 
-    const dailyDisplay = error 
-      ? chalk.red(error.slice(0, widths.daily - 2))
-      : formatPercent(daily.percent_remaining);
-
-    const row = [
-      provider,
-      dailyDisplay,
-      formatReset(daily.reset_time_iso),
-      formatPercent(weekly?.percent_remaining),
-      formatReset(weekly?.reset_time_iso),
-      chalk.yellow(account.slice(0, accountSliceLen)),
-      chalk.dim(presets || '-'),
-    ];
+    let row;
+    if (error) {
+      row = [
+        provider,
+        chalk.red(error.slice(0, widths.daily - 2)),
+        formatReset(daily.reset_time_iso),
+        chalk.gray('-'),
+        formatReset(weekly?.reset_time_iso),
+        accountDisplay,
+        chalk.dim(presets || '-'),
+      ];
+    } else {
+      const dailyData = formatPercentTwoLine(daily.percent_remaining);
+      const weeklyData = formatPercentTwoLine(weekly?.percent_remaining);
+      
+      row = [
+        provider,
+        `${dailyData.bar}\n${dailyData.percent}`,
+        formatReset(daily.reset_time_iso),
+        `${weeklyData.bar}\n${weeklyData.percent}`,
+        formatReset(weekly?.reset_time_iso),
+        accountDisplay,
+        chalk.dim(presets || '-'),
+      ];
+    }
 
     if (presetsList.some(p => p.includes('Current Active') || p.includes('Antigravity'))) {
       activeRows.push(row);
@@ -628,30 +670,44 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
     wordWrap: true,
   });
   
-  const accountSliceLen = Math.max(15, widths.account - 3);
   const presetsSliceLen = Math.max(20, widths.presets - 2);
   
   openaiItems.forEach(result => {
     const daily = result.daily || {};
     const weekly = result.weekly;
-    const account = result.account_id || chalk.gray('-');
+    const accountId = result.account_id || '';
+    const nickname = result.nickname;
+    const accountDisplay = nickname 
+      ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
+      : chalk.yellow(accountId);
     const presetsList = result.presets || [];
     const presets = presetsList.join(', ').slice(0, presetsSliceLen);
     const error = result.error;
     
-    const dailyDisplay = error 
-      ? chalk.red(error.slice(0, widths.daily - 2))
-      : formatPercent(daily.percent_remaining);
-    
-    table.push([
-      chalk.green('openai'),
-      dailyDisplay,
-      formatReset(daily.reset_time_iso),
-      formatPercent(weekly?.percent_remaining),
-      formatReset(weekly?.reset_time_iso),
-      chalk.yellow(account.slice(0, accountSliceLen)),
-      chalk.dim(presets || '-'),
-    ]);
+    if (error) {
+      table.push([
+        chalk.green('openai'),
+        chalk.red(error.slice(0, widths.daily - 2)),
+        formatReset(daily.reset_time_iso),
+        chalk.gray('-'),
+        formatReset(weekly?.reset_time_iso),
+        accountDisplay,
+        chalk.dim(presets || '-'),
+      ]);
+    } else {
+      const dailyData = formatPercentTwoLine(daily.percent_remaining);
+      const weeklyData = formatPercentTwoLine(weekly?.percent_remaining);
+      
+      table.push([
+        chalk.green('openai'),
+        `${dailyData.bar}\n${dailyData.percent}`,
+        formatReset(daily.reset_time_iso),
+        `${weeklyData.bar}\n${weeklyData.percent}`,
+        formatReset(weekly?.reset_time_iso),
+        accountDisplay,
+        chalk.dim(presets || '-'),
+      ]);
+    }
   });
   
   if (showGoogle && googleItems.length > 0) {
@@ -659,7 +715,11 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
     
     googleItems.forEach(result => {
       const daily = result.daily || {};
-      const account = result.account_id || chalk.gray('-');
+      const accountId = result.account_id || '';
+      const nickname = result.nickname;
+      const accountDisplay = nickname 
+        ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
+        : chalk.yellow(accountId);
       const presetsList = result.presets || [];
       const presets = presetsList.join(', ').slice(0, presetsSliceLen);
       
@@ -668,13 +728,15 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
         provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
       }
       
+      const dailyData = formatPercentTwoLine(daily.percent_remaining);
+      
       table.push([
         provider,
-        formatPercent(daily.percent_remaining),
+        `${dailyData.bar}\n${dailyData.percent}`,
         formatReset(daily.reset_time_iso),
         chalk.gray('-'),
         chalk.gray('-'),
-        chalk.yellow(account.slice(0, accountSliceLen)),
+        accountDisplay,
         chalk.dim(presets || '-'),
       ]);
     });
@@ -710,7 +772,7 @@ async function cmdQuota(manager) {
       console.clear();
       printHeader();
       
-      if (termWidth >= 100) {
+      if (termWidth >= 80) {
         await renderQuotaTableWithToggle(results, showGoogleInTable);
       } else {
         renderQuotaCompact(results, termWidth, showGoogleDetail);
@@ -726,7 +788,7 @@ async function cmdQuota(manager) {
       
       const choices = [];
       
-      if (termWidth >= 100) {
+      if (termWidth >= 80) {
         choices.push({
           name: showGoogleInTable
             ? chalk.yellow(`  📂 Hide Google models (${googleCount} models)`)

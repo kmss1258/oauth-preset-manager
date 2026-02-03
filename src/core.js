@@ -337,12 +337,16 @@ export class PresetManager {
       const existing = tokenMap.get(entry.access);
       if (existing) {
         existing.presets.push(formatPresetLabel(presetName));
+        if (!existing.nickname) {
+          existing.nickname = presetName;
+        }
       } else {
         tokenMap.set(entry.access, {
           access: entry.access,
           expires: entry.expires,
           account_id: entry.account_id,
           presets: [formatPresetLabel(presetName)],
+          nickname: presetName,
         });
       }
     }
@@ -355,6 +359,9 @@ export class PresetManager {
         this._fetchOpenAIQuotaForToken(item.access, item.expires, item.account_id)
           .then(result => {
             result.presets = item.presets.sort();
+            if (item.nickname) {
+              result.nickname = item.nickname;
+            }
             results.push(result);
           })
           .catch(() => {})
@@ -396,6 +403,7 @@ export class PresetManager {
         args: [null, account.refresh, account.project_id],
         presets: [`(Antigravity: ${account.email || 'User'})`],
         accId: account.project_id,
+        nickname: account.email || null,
       });
     }
 
@@ -409,10 +417,16 @@ export class PresetManager {
               if ((!r.account_id || r.account_id === 'unknown-project') && task.accId) {
                 r.account_id = task.accId;
               }
+              if (task.nickname) {
+                r.nickname = task.nickname;
+              }
               results.push(r);
             }
           } else {
             res.presets = task.presets;
+            if (task.nickname) {
+              res.nickname = task.nickname;
+            }
             results.push(res);
           }
         })
