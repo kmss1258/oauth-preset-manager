@@ -152,7 +152,8 @@ function deduplicateResults(results) {
   const seen = new Map();
   
   for (const result of results) {
-    const key = `${result.provider}-${result.account_id}-${result.daily?.label || 'default'}`;
+    const isCurrent = (result.presets || []).some(p => p.includes('Current Active'));
+    const key = `${result.provider}-${result.account_id}-${result.daily?.label || 'default'}-${isCurrent ? 'current' : 'preset'}`;
     const existing = seen.get(key);
     
     if (!existing) {
@@ -163,6 +164,99 @@ function deduplicateResults(results) {
   }
   
   return Array.from(seen.values());
+}
+
+function extractPresetName(label) {
+  if (!label || label.startsWith('(')) return null;
+  const idx = label.indexOf(' (');
+  if (idx > 0) return label.slice(0, idx);
+  return label;
+}
+
+function getPresetSortKey(result) {
+  const names = (result.presets || [])
+    .map(extractPresetName)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  if (names.length > 0) return names[0];
+  return null;
+}
+
+function hasPresetLabel(result, label) {
+  return (result.presets || []).some(p => p.includes(label));
+}
+
+function sortResultsByPresetName(results) {
+  const entries = results.map((r, i) => ({
+    r,
+    i,
+    key: getPresetSortKey(r),
+    isCurrent: hasPresetLabel(r, 'Current Active'),
+    isAntigravity: hasPresetLabel(r, 'Antigravity'),
+  }));
+
+  entries.sort((a, b) => {
+    if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+    if (a.isAntigravity !== b.isAntigravity) return a.isAntigravity ? -1 : 1;
+
+    const aHas = Boolean(a.key);
+    const bHas = Boolean(b.key);
+    if (aHas && bHas) {
+      const cmp = a.key.localeCompare(b.key, undefined, { sensitivity: 'base' });
+      if (cmp !== 0) return cmp;
+    } else if (aHas) {
+      return -1;
+    } else if (bHas) {
+      return 1;
+    }
+
+    const providerCmp = (a.r.provider || '').localeCompare(b.r.provider || '');
+    if (providerCmp !== 0) return providerCmp;
+
+    const accountCmp = (a.r.account_id || '').localeCompare(b.r.account_id || '');
+    if (accountCmp !== 0) return accountCmp;
+
+    return a.i - b.i;
+  });
+
+  return entries.map(entry => entry.r);
+}
+
+function normalizeQuotaResults(results) {
+  return sortResultsByPresetName(deduplicateResults(results));
+}
+
+function formatAccountLabel(result) {
+  const accountId = result?.account_id || '';
+  const nickname = result?.nickname;
+  if (nickname && accountId) return `${nickname} (${accountId})`;
+  return nickname || accountId || '-';
+}
+
+function renderOpenAIBanner(results, termWidth) {
+  const openaiItems = results.filter(r => r.provider === 'openai');
+  if (openaiItems.length === 0) return;
+
+  const current = openaiItems.find(r => hasPresetLabel(r, 'Current Active'));
+  const currentLabel = formatAccountLabel(current);
+
+  const presetSet = new Set();
+  for (const item of openaiItems) {
+    for (const label of item.presets || []) {
+      const name = extractPresetName(label);
+      if (name) presetSet.add(name);
+    }
+  }
+
+  const presetList = Array.from(presetSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const presetsRaw = presetList.length ? presetList.join(', ') : '-';
+  const maxLen = Math.max(20, termWidth - 10);
+  const presetsLine = presetsRaw.length > maxLen ? `${presetsRaw.slice(0, maxLen - 3)}...` : presetsRaw;
+
+  printInfoBox(t('quota_openai_banner'), [
+    `${t('quota_openai_current')}: ${currentLabel}`,
+    `${t('quota_openai_presets')}: ${presetsLine}`,
+  ]);
 }
 
 function getTerminalWidth() {
@@ -213,8 +307,10 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
   console.log(chalk.dim('  ' + t('quota_wide_hint')));
   console.log();
   
-  const openaiItems = results.filter(r => r.provider === 'openai');
-  const googleItems = results.filter(r => r.provider === 'google');
+  const normalized = normalizeQuotaResults(results);
+  renderOpenAIBanner(normalized, termWidth);
+  const openaiItems = normalized.filter(r => r.provider === 'openai');
+  const googleItems = normalized.filter(r => r.provider === 'google');
   
   const formatQuotaRow = (result, index) => {
     const daily = result.daily || {};
@@ -303,7 +399,7 @@ function renderQuotaTable(results) {
     return;
   }
 
-  const deduped = deduplicateResults(results);
+  const deduped = normalizeQuotaResults(results);
   const termWidth = getTerminalWidth();
   
   if (termWidth < 80) {
@@ -311,6 +407,7 @@ function renderQuotaTable(results) {
     return;
   }
   
+  renderOpenAIBanner(deduped, termWidth);
   const widths = calculateColWidths(termWidth);
 
   const table = new Table({
@@ -642,12 +739,14 @@ async function renderGoogleModelsDetail(results, termWidth) {
 
 async function renderQuotaTableWithToggle(results, showGoogle = true) {
   const termWidth = getTerminalWidth();
-  const openaiItems = results.filter(r => r.provider === 'openai');
-  const googleItems = results.filter(r => r.provider === 'google');
+  const normalized = normalizeQuotaResults(results);
+  const openaiItems = normalized.filter(r => r.provider === 'openai');
+  const googleItems = normalized.filter(r => r.provider === 'google');
   
   console.log();
   console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
   console.log();
+  renderOpenAIBanner(normalized, termWidth);
   
   const widths = calculateColWidths(termWidth);
   
@@ -671,8 +770,11 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
   });
   
   const presetsSliceLen = Math.max(20, widths.presets - 2);
-  
-  openaiItems.forEach(result => {
+  const activeRows = [];
+  const presetRows = [];
+  const rowItems = showGoogle ? normalized : openaiItems;
+
+  rowItems.forEach(result => {
     const daily = result.daily || {};
     const weekly = result.weekly;
     const accountId = result.account_id || '';
@@ -683,64 +785,59 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
     const presetsList = result.presets || [];
     const presets = presetsList.join(', ').slice(0, presetsSliceLen);
     const error = result.error;
-    
+
+    let provider = result.provider || chalk.gray('-');
+    if (provider === 'google') {
+      provider = chalk.blue('google');
+      if (daily.label) {
+        provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
+      }
+    } else if (provider === 'openai') {
+      provider = chalk.green('openai');
+    }
+
+    let row;
     if (error) {
-      table.push([
-        chalk.green('openai'),
+      row = [
+        provider,
         chalk.red(error.slice(0, widths.daily - 2)),
         formatReset(daily.reset_time_iso),
         chalk.gray('-'),
         formatReset(weekly?.reset_time_iso),
         accountDisplay,
         chalk.dim(presets || '-'),
-      ]);
+      ];
     } else {
       const dailyData = formatPercentTwoLine(daily.percent_remaining);
       const weeklyData = formatPercentTwoLine(weekly?.percent_remaining);
-      
-      table.push([
-        chalk.green('openai'),
-        `${dailyData.bar}\n${dailyData.percent}`,
-        formatReset(daily.reset_time_iso),
-        `${weeklyData.bar}\n${weeklyData.percent}`,
-        formatReset(weekly?.reset_time_iso),
-        accountDisplay,
-        chalk.dim(presets || '-'),
-      ]);
-    }
-  });
-  
-  if (showGoogle && googleItems.length > 0) {
-    if (openaiItems.length > 0) table.push([]);
-    
-    googleItems.forEach(result => {
-      const daily = result.daily || {};
-      const accountId = result.account_id || '';
-      const nickname = result.nickname;
-      const accountDisplay = nickname 
-        ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
-        : chalk.yellow(accountId);
-      const presetsList = result.presets || [];
-      const presets = presetsList.join(', ').slice(0, presetsSliceLen);
-      
-      let provider = chalk.blue('google');
-      if (daily.label) {
-        provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
-      }
-      
-      const dailyData = formatPercentTwoLine(daily.percent_remaining);
-      
-      table.push([
+      const weeklyDisplay = result.provider === 'openai'
+        ? `${weeklyData.bar}\n${weeklyData.percent}`
+        : chalk.gray('-');
+      const weeklyResetDisplay = result.provider === 'openai'
+        ? formatReset(weekly?.reset_time_iso)
+        : chalk.gray('-');
+
+      row = [
         provider,
         `${dailyData.bar}\n${dailyData.percent}`,
         formatReset(daily.reset_time_iso),
-        chalk.gray('-'),
-        chalk.gray('-'),
+        weeklyDisplay,
+        weeklyResetDisplay,
         accountDisplay,
         chalk.dim(presets || '-'),
-      ]);
-    });
-  }
+      ];
+    }
+
+    if (presetsList.some(p => p.includes('Current Active') || p.includes('Antigravity'))) {
+      activeRows.push(row);
+    } else {
+      presetRows.push(row);
+    }
+  });
+
+  for (const row of activeRows) table.push(row);
+  if (activeRows.length > 0 && presetRows.length > 0) table.push([]);
+  for (const row of presetRows) table.push(row);
   
   console.log(table.toString());
   console.log();
@@ -763,21 +860,22 @@ async function cmdQuota(manager) {
   
   try {
     const results = await manager.collectAllQuota();
+    const normalizedResults = normalizeQuotaResults(results);
     const termWidth = getTerminalWidth();
     let showGoogleDetail = false;
     let showGoogleInTable = false;
-    const googleCount = results.filter(r => r.provider === 'google').length;
+    const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
     
     while (true) {
       console.clear();
       printHeader();
       
       if (termWidth >= 80) {
-        await renderQuotaTableWithToggle(results, showGoogleInTable);
+        await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable);
       } else {
-        renderQuotaCompact(results, termWidth, showGoogleDetail);
+        renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail);
         if (showGoogleDetail && googleCount > 0) {
-          await renderGoogleModelsDetail(results, termWidth);
+          await renderGoogleModelsDetail(normalizedResults, termWidth);
         }
       }
       
