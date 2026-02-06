@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PresetManager, timeUntilReset } from '../src/core.js';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
@@ -12,6 +12,10 @@ describe('Quota Collection Tests', () => {
     testConfigDir = join(homedir(), '.config', 'oauth-preset-manager-test');
     manager = new PresetManager(testConfigDir);
     await manager.init();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('timeUntilReset', () => {
@@ -117,6 +121,23 @@ describe('Quota Collection Tests', () => {
       });
 
       expect(tokenMap.size).toBe(2);
+    });
+  });
+
+  describe('missing optional files', () => {
+    it('should skip active quota lookup when auth and antigravity files are missing', async () => {
+      const accessSpy = vi.spyOn(fs, 'access').mockRejectedValue(
+        Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      );
+      const openaiSpy = vi.spyOn(manager, '_fetchOpenAIQuotaForToken');
+      const googleSpy = vi.spyOn(manager, '_fetchGoogleQuotaForToken');
+
+      const results = await manager.collectActiveQuota();
+
+      expect(results).toEqual([]);
+      expect(openaiSpy).not.toHaveBeenCalled();
+      expect(googleSpy).not.toHaveBeenCalled();
+      expect(accessSpy).toHaveBeenCalled();
     });
   });
 });

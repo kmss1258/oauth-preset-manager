@@ -391,6 +391,10 @@ export class PresetManager {
       }
     }
 
+    if (tokenMap.size === 0) {
+      return [];
+    }
+
     const results = [];
     const promises = [];
 
@@ -436,7 +440,7 @@ export class PresetManager {
       }
     } catch {}
 
-    const agPath = getAntigravityAccountsPath();
+    const agPath = await getAntigravityAccountsPath();
     for (const account of await extractAntigravityAccounts(agPath)) {
       tasks.push({
         func: this._fetchGoogleQuotaForToken.bind(this),
@@ -445,6 +449,10 @@ export class PresetManager {
         accId: account.project_id,
         nickname: account.email || null,
       });
+    }
+
+    if (tasks.length === 0) {
+      return [];
     }
 
     const results = [];
@@ -790,7 +798,7 @@ async function refreshGoogleToken(refreshToken) {
   }
 }
 
-function getAntigravityAccountsPath() {
+async function getAntigravityAccountsPath() {
   const paths = [
     join(homedir(), '.config', 'opencode', 'antigravity-accounts.json'),
     join(homedir(), '.local', 'share', 'opencode', 'antigravity-accounts.json'),
@@ -798,14 +806,18 @@ function getAntigravityAccountsPath() {
   
   for (const p of paths) {
     try {
-      fs.access(p);
+      await fs.access(p);
       return p;
     } catch {}
   }
-  return paths[0];
+  return null;
 }
 
 async function extractAntigravityAccounts(path) {
+  if (!path) {
+    return [];
+  }
+
   try {
     await fs.access(path);
   } catch {
