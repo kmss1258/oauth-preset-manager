@@ -274,12 +274,11 @@ function calculateColWidths(totalWidth) {
   if (availableWidth < 80) {
     return {
       provider: 12,
-      daily: 14,
+      daily: 16,
       reset: 10,
       weekly: 0,
       weekly_reset: 0,
-      account: 18,
-      presets: Math.max(12, availableWidth - 52),
+      account: Math.max(12, availableWidth - 38),
     };
   } else if (availableWidth < 100) {
     return {
@@ -288,8 +287,7 @@ function calculateColWidths(totalWidth) {
       reset: 12,
       weekly: 14,
       weekly_reset: 12,
-      account: 22,
-      presets: Math.max(12, availableWidth - 82),
+      account: Math.max(12, availableWidth - 66),
     };
   } else {
     return {
@@ -298,8 +296,7 @@ function calculateColWidths(totalWidth) {
       reset: 12,
       weekly: 14,
       weekly_reset: 12,
-      account: 26,
-      presets: Math.max(16, Math.min(40, availableWidth - 94)),
+      account: Math.max(12, availableWidth - 68),
     };
   }
 }
@@ -426,21 +423,18 @@ function renderQuotaTable(results) {
       chalk.cyan(t('quota_weekly')),
       chalk.cyan(t('quota_weekly_reset')),
       chalk.cyan(t('quota_account')),
-      chalk.cyan(t('quota_presets')),
     ].map(h => chalk.bold(h)),
     style: { 
       head: [], 
       border: ['gray'],
       compact: true,
     },
-    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account, widths.presets],
+    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account],
     wordWrap: true,
   });
 
   const activeRows = [];
   const presetRows = [];
-
-  const presetsSliceLen = Math.max(20, widths.presets - 2);
 
   for (const result of deduped) {
     const daily = result.daily || {};
@@ -451,7 +445,6 @@ function renderQuotaTable(results) {
       ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
       : chalk.yellow(accountId);
     const presetsList = result.presets || [];
-    const presets = presetsList.join(', ').slice(0, presetsSliceLen);
     const error = result.error;
 
     let provider = result.provider || chalk.gray('-');
@@ -470,7 +463,6 @@ function renderQuotaTable(results) {
         chalk.gray('-'),
         formatReset(weekly?.reset_time_iso),
         accountDisplay,
-        chalk.dim(presets || '-'),
       ];
     } else {
       const dailyData = formatPercentTwoLine(daily.percent_remaining);
@@ -483,7 +475,6 @@ function renderQuotaTable(results) {
         `${weeklyData.bar}\n${weeklyData.percent}`,
         formatReset(weekly?.reset_time_iso),
         accountDisplay,
-        chalk.dim(presets || '-'),
       ];
     }
 
@@ -749,7 +740,6 @@ function waitForQuotaKeypress() {
   if (!process.stdin.isTTY) return Promise.resolve('return');
 
   return new Promise(resolve => {
-    readline.emitKeypressEvents(process.stdin);
     const wasRawMode = process.stdin.isRaw;
 
     if (process.stdin.setRawMode && !wasRawMode) {
@@ -757,21 +747,35 @@ function waitForQuotaKeypress() {
     }
 
     const cleanup = () => {
-      process.stdin.off('keypress', onKeypress);
+      process.stdin.off('data', onData);
       if (process.stdin.setRawMode && !wasRawMode) {
         process.stdin.setRawMode(false);
       }
     };
 
-    const onKeypress = (_str, key) => {
-      const name = key?.name || _str;
-      if (name === 'r' || name === 'g' || name === 'q' || name === 'escape' || name === 'return' || name === 'enter') {
+    const onData = (chunk) => {
+      const text = chunk.toString('utf8');
+
+      if (text === '\u001b') {
         cleanup();
-        resolve(name === 'enter' ? 'return' : name);
+        resolve('escape');
+        return;
+      }
+
+      if (text === '\r' || text === '\n') {
+        cleanup();
+        resolve('return');
+        return;
+      }
+
+      const key = text.trim().toLowerCase();
+      if (key === 'r' || key === 'g' || key === 'q') {
+        cleanup();
+        resolve(key);
       }
     };
 
-    process.stdin.on('keypress', onKeypress);
+    process.stdin.on('data', onData);
     process.stdin.resume();
   });
 }
@@ -801,18 +805,16 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
       chalk.cyan(t('quota_weekly')),
       chalk.cyan(t('quota_weekly_reset')),
       chalk.cyan(t('quota_account')),
-      chalk.cyan(t('quota_presets')),
     ].map(h => chalk.bold(h)),
     style: { 
       head: [], 
       border: ['gray'],
       compact: true,
     },
-    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account, widths.presets],
+    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account],
     wordWrap: true,
   });
   
-  const presetsSliceLen = Math.max(20, widths.presets - 2);
   const activeRows = [];
   const presetRows = [];
   const rowItems = showGoogle ? normalized : openaiItems;
@@ -826,7 +828,6 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
       ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
       : chalk.yellow(accountId);
     const presetsList = result.presets || [];
-    const presets = presetsList.join(', ').slice(0, presetsSliceLen);
     const error = result.error;
 
     let provider = result.provider || chalk.gray('-');
@@ -848,7 +849,6 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
         chalk.gray('-'),
         formatReset(weekly?.reset_time_iso),
         accountDisplay,
-        chalk.dim(presets || '-'),
       ];
     } else {
       const dailyData = formatPercentTwoLine(daily.percent_remaining);
@@ -867,7 +867,6 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
         weeklyDisplay,
         weeklyResetDisplay,
         accountDisplay,
-        chalk.dim(presets || '-'),
       ];
     }
 
