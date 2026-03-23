@@ -273,30 +273,30 @@ function calculateColWidths(totalWidth) {
   
   if (availableWidth < 80) {
     return {
-      provider: 12,
+      provider: 9,
       daily: 18,
       reset: 10,
       weekly: 0,
       weekly_reset: 0,
-      account: Math.min(40, Math.max(12, availableWidth - 38)),
+      account: Math.min(30, Math.max(12, availableWidth - 38)),
     };
   } else if (availableWidth < 100) {
     return {
-      provider: 14,
+      provider: 11,
       daily: 18,
       reset: 12,
       weekly: 18,
       weekly_reset: 12,
-      account: Math.min(40, Math.max(12, availableWidth - 66)),
+      account: Math.min(30, Math.max(12, availableWidth - 66)),
     };
   } else {
     return {
-      provider: 16,
+      provider: 13,
       daily: 18,
       reset: 12,
       weekly: 18,
       weekly_reset: 12,
-      account: Math.min(40, Math.max(12, availableWidth - 68)),
+      account: Math.min(30, Math.max(12, availableWidth - 68)),
     };
   }
 }
