@@ -361,7 +361,9 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
   if (openaiItems.length > 0) {
     console.log(chalk.bold.green('  ⚡ OpenAI'));
     console.log();
-    openaiItems.forEach((result, i) => formatQuotaRow(result, i));
+    for (const [i, result] of openaiItems.entries()) {
+      formatQuotaRow(result, i);
+    }
   }
   
   if (googleItems.length > 0) {
@@ -373,7 +375,9 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
     if (showGoogleDetail) {
       console.log(chalk.bold.blue(`  📦 Google (${googleItems.length} models)`));
       console.log();
-      googleItems.forEach((result, i) => formatQuotaRow(result, i));
+      for (const [i, result] of googleItems.entries()) {
+        formatQuotaRow(result, i);
+      }
     } else {
       const accountId = googleItems[0]?.account_id || '';
       const nickname = googleItems[0]?.nickname || '';
@@ -527,7 +531,7 @@ function printSwitchResult(result) {
 
 async function setupAuthPath(manager) {
   printHeader();
-  const defaultPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json');
+  const defaultPath = manager.getSuggestedAuthPath();
 
   if (existsSync(defaultPath)) {
     printInfoBox('🔐 Auth Configuration', [

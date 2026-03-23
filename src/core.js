@@ -2,9 +2,10 @@ import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import https from 'https';
+import { env } from 'process';
 
-const ANTIGRAVITY_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-const ANTIGRAVITY_CLIENT_SECRET = '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';
+const ANTIGRAVITY_CLIENT_ID = env.OPM_ANTIGRAVITY_CLIENT_ID?.trim() || '';
+const ANTIGRAVITY_CLIENT_SECRET = env.OPM_ANTIGRAVITY_CLIENT_SECRET?.trim() || '';
 const OPENAI_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const GOOGLE_QUOTA_API_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
 const GOOGLE_TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
@@ -17,6 +18,37 @@ const GOOGLE_MODEL_KEYS = {
   'claude-opus-4-5': 'Claude',
   'gemini-3-pro-image': 'G3Image',
 };
+
+export function getOpenCodeAuthPathCandidates(homeDir = homedir()) {
+  const dataHome = env.XDG_DATA_HOME?.trim() || join(homeDir, '.local', 'share');
+  const configHome = env.XDG_CONFIG_HOME?.trim() || join(homeDir, '.config');
+
+  return [
+    join(dataHome, 'opencode', 'auth.json'),
+    join(configHome, 'opencode', 'auth.json'),
+  ];
+}
+
+export function getAntigravityAccountsPathCandidates(homeDir = homedir()) {
+  const dataHome = env.XDG_DATA_HOME?.trim() || join(homeDir, '.local', 'share');
+  const configHome = env.XDG_CONFIG_HOME?.trim() || join(homeDir, '.config');
+
+  return [
+    join(configHome, 'opencode', 'antigravity-accounts.json'),
+    join(dataHome, 'opencode', 'antigravity-accounts.json'),
+  ];
+}
+
+async function findFirstExistingPath(paths) {
+  for (const path of paths) {
+    if (!path) continue;
+    try {
+      await fs.access(path);
+      return path;
+    } catch {}
+  }
+  return null;
+}
 
 export class PresetManager {
   constructor(configDir = null) {
@@ -31,6 +63,7 @@ export class PresetManager {
     await fs.mkdir(this.presetsDir, { recursive: true });
     await fs.mkdir(this.backupsDir, { recursive: true });
     this.config = await this._loadConfig();
+    await this._normalizeAuthPath();
   }
 
   async _loadConfig() {
@@ -38,7 +71,7 @@ export class PresetManager {
       const data = await fs.readFile(this.configFile, 'utf-8');
       return JSON.parse(data);
     } catch {
-      const defaultAuthPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json');
+      const defaultAuthPath = this.getSuggestedAuthPath();
       return {
         auth_path: defaultAuthPath,
         current_preset: null,
@@ -47,12 +80,36 @@ export class PresetManager {
     }
   }
 
+  getSuggestedAuthPath() {
+    return getOpenCodeAuthPathCandidates()[0];
+  }
+
+  async _normalizeAuthPath() {
+    const envAuthPath = (env.OPM_AUTH_PATH || '').trim();
+    if (envAuthPath) {
+      return;
+    }
+
+    const currentPath = this.config?.auth_path;
+    if (currentPath) {
+      try {
+        await fs.access(currentPath);
+        return;
+      } catch {}
+    }
+
+    const existing = await findFirstExistingPath(getOpenCodeAuthPathCandidates());
+    this.config.auth_path = existing || this.getSuggestedAuthPath();
+    await this._saveConfig();
+  }
+
   async _saveConfig() {
     await fs.writeFile(this.configFile, JSON.stringify(this.config, null, 2));
   }
 
   getAuthPath() {
-    return resolve(this.config.auth_path);
+    const envAuthPath = (env.OPM_AUTH_PATH || '').trim();
+    return resolve(envAuthPath || this.config.auth_path || this.getSuggestedAuthPath());
   }
 
   async setAuthPath(path) {
@@ -771,7 +828,7 @@ function remainingPercent(window) {
 }
 
 async function refreshGoogleToken(refreshToken) {
-  if (!refreshToken) return null;
+  if (!refreshToken || !ANTIGRAVITY_CLIENT_ID || !ANTIGRAVITY_CLIENT_SECRET) return null;
 
   const postData = new URLSearchParams({
     client_id: ANTIGRAVITY_CLIENT_ID,
@@ -799,18 +856,7 @@ async function refreshGoogleToken(refreshToken) {
 }
 
 async function getAntigravityAccountsPath() {
-  const paths = [
-    join(homedir(), '.config', 'opencode', 'antigravity-accounts.json'),
-    join(homedir(), '.local', 'share', 'opencode', 'antigravity-accounts.json'),
-  ];
-  
-  for (const p of paths) {
-    try {
-      await fs.access(p);
-      return p;
-    } catch {}
-  }
-  return null;
+  return findFirstExistingPath(getAntigravityAccountsPathCandidates());
 }
 
 async function extractAntigravityAccounts(path) {

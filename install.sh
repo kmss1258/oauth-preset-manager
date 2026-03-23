@@ -14,6 +14,16 @@ check_node() {
         echo "   Visit: https://nodejs.org/"
         exit 1
     fi
+
+    if ! command -v npm &> /dev/null; then
+        echo "❌ npm is not installed. Please install Node.js with npm first."
+        exit 1
+    fi
+
+    if ! command -v git &> /dev/null; then
+        echo "❌ git is not installed. Please install git first."
+        exit 1
+    fi
     
     NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
     if [ "$NODE_VERSION" -lt "$NODE_VERSION_MIN" ]; then
@@ -37,16 +47,22 @@ install_local() {
 install_from_git() {
     echo "📦 Installing from GitHub..."
     
-    if [ -d "$INSTALL_DIR" ]; then
-        echo "🧹 Cleaning up old installation..."
-        rm -rf "$INSTALL_DIR"
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "🔄 Updating existing installation..."
+        git -C "$INSTALL_DIR" fetch --depth 1 origin main
+        git -C "$INSTALL_DIR" reset --hard origin/main
+    else
+        if [ -d "$INSTALL_DIR" ]; then
+            echo "🧹 Cleaning up old installation..."
+            rm -rf "$INSTALL_DIR"
+        fi
+
+        echo "⬇️  Cloning repository..."
+        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || {
+            echo "❌ Failed to clone repository"
+            exit 1
+        }
     fi
-    
-    echo "⬇️  Cloning repository..."
-    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || {
-        echo "❌ Failed to clone repository"
-        exit 1
-    }
     
     cd "$INSTALL_DIR"
     

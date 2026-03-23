@@ -14,6 +14,8 @@ Install and run in one line:
 curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash && opm
 ```
 
+Re-run that same command later to update an existing install in place.
+
 Or if already installed, just run:
 
 ```bash
@@ -25,7 +27,7 @@ opm
 ## 🔥 Features
 
 - **Instant Switching**: Swap `auth.json` configurations with a single command.
-- **Quota Dashboard**: View real-time quota usage for OpenAI & Google (Antigravity) accounts.
+- **Quota Table**: View quota usage in a Rich table for OpenAI & Google (Antigravity) accounts.
   - Supports detailed breakdown for Antigravity models (Flash, Pro, Claude).
   - Visual progress bars and reset timers.
 - **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
@@ -42,6 +44,7 @@ opm
 ```bash
 curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash
 ```
+> If `opm` is already installed, this updates the existing install instead of creating a second one.
 
 ### Manual Install
 ```bash
@@ -76,6 +79,7 @@ opm quota
 opm q
 ```
 > Shows usage for all presets + currently active Antigravity session.
+> Renders a Rich table with provider, quota, reset, account, preset, and error columns.
 
 **Save Current Auth:**
 ```bash
@@ -86,9 +90,12 @@ opm save <new_preset_name>
 
 Presets are stored in `~/.config/oauth-preset-manager/presets/`.
 The tool automatically detects your OpenCode `auth.json` location.
+OpenCode uses XDG-style paths on both Linux and macOS, and honors `XDG_DATA_HOME` / `XDG_CONFIG_HOME` if you set them.
 
 ### Environment Variables
 - `OPM_LANG`: Set language (`ko` or `en`)
+- `OPM_ANTIGRAVITY_CLIENT_ID`: Required for Google/Antigravity quota refresh
+- `OPM_ANTIGRAVITY_CLIENT_SECRET`: Required for Google/Antigravity quota refresh
 
 ## 📝 Project Structure
 

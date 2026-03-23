@@ -12,6 +12,8 @@ curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/i
 
 > **참고:** `~/.local/bin`을 PATH에 추가해야 할 수 있습니다. 설치 프로그램이 안내해드립니다.
 
+> `opm`가 이미 설치되어 있어도 이 명령은 기존 설치를 업데이트합니다.
+
 ## 🚀 빠른 시작
 
 그냥 실행하세요:
@@ -21,13 +23,17 @@ opm
 
 끝! 🎉 화살표 키로 프리셋을 선택하고 전환하세요.
 
+이미 설치되어 있어도 아래 설치 명령을 다시 실행하면 기존 설치를 업데이트합니다.
+
+OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `XDG_DATA_HOME` / `XDG_CONFIG_HOME`가 있으면 이를 따릅니다.
+
 ---
 
 ## ✨ 주요 기능
 
 - 🔄 **빠른 전환**: 여러 OAuth 계정 간 즉시 전환
 - 💾 **프리셋 관리**: 여러 인증 상태를 저장하고 정리
-- 🎨 **인터랙티브 UI**: 아름다운 터미널 인터페이스와 메뉴 선택
+- 📊 **쿼터 조회**: `opm q` / `opm quota`로 Rich 표 형식으로 확인
 - 🔒 **자동 백업**: 전환 전 자동 백업으로 안전하게
 - ⚡ **간단한 명령어**: `save`와 `switch` 두 개면 충분!
 
@@ -60,6 +66,14 @@ opm save personal
 opm switch work
 opm switch personal
 ```
+
+**할당량 확인:**
+```bash
+opm quota
+# 또는
+opm q
+```
+> Provider, quota, reset, account, presets, error 컬럼을 Rich 표로 보여줍니다.
 
 ## 🔧 작동 원리
 
@@ -104,7 +118,14 @@ $ opm
 ~/.local/share/opencode/auth.json
 ```
 
+OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `XDG_DATA_HOME` / `XDG_CONFIG_HOME`가 있으면 이를 따릅니다.
+
 다른 위치에 있다면 경로를 입력하라는 메시지가 표시됩니다.
+
+### 환경 변수
+- `OPM_LANG`: 언어 설정 (`ko` 또는 `en`)
+- `OPM_ANTIGRAVITY_CLIENT_ID`: Google/Antigravity 할당량 갱신에 필요
+- `OPM_ANTIGRAVITY_CLIENT_SECRET`: Google/Antigravity 할당량 갱신에 필요
 
 ## 📁 데이터 저장 위치
 
