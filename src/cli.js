@@ -6,10 +6,14 @@ import Table from 'cli-table3';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
 import { PresetManager, timeUntilReset } from './core.js';
 import { t } from './i18n.js';
+
+const require = createRequire(import.meta.url);
+const { version: APP_VERSION } = require('../package.json');
 
 function gradientCyan(text) {
   return chalk.cyan.bold(text);
@@ -41,7 +45,7 @@ function printHeader() {
   console.log(chalk.magenta.bold('   ╚██████╔╝██║     ██║ ╚═╝ ██║'));
   console.log(chalk.magenta.bold('    ╚═════╝ ╚═╝     ╚═╝     ╚═╝'));
   console.log();
-  console.log(chalk.dim('   OAuth Preset Manager ') + chalk.yellow('v1.0.0') + chalk.dim(' - Node.js Edition'));
+  console.log(chalk.dim('   OAuth Preset Manager ') + chalk.yellow(`v${APP_VERSION}`) + chalk.dim(' - Node.js Edition'));
   console.log();
   console.log(chalk.gray('   ' + BOX.h.repeat(50)));
   console.log();
