@@ -3,6 +3,8 @@ set -e
 
 REPO_URL="https://github.com/kmss1258/oauth-preset-manager.git"
 INSTALL_DIR="$HOME/.oauth-preset-manager"
+STATE_DIR="$HOME/.config/oauth-preset-manager"
+STATE_FILE="$STATE_DIR/install-launcher-path"
 NODE_VERSION_MIN=18
 
 echo "🚀 OPM (OAuth Preset Manager) - Node.js Edition Installer"
@@ -35,6 +37,23 @@ check_node() {
 }
 
 find_launcher_dir() {
+    if [ -f "$STATE_FILE" ]; then
+        saved_dir="$(cat "$STATE_FILE" 2>/dev/null || true)"
+        if [ -n "$saved_dir" ] && [ -d "$saved_dir" ] && [ -w "$saved_dir" ]; then
+            printf '%s\n' "$saved_dir"
+            return 0
+        fi
+    fi
+
+    existing_opm="$(command -v opm 2>/dev/null || true)"
+    if [ -n "$existing_opm" ]; then
+        existing_dir="$(dirname "$existing_opm")"
+        if [ -d "$existing_dir" ] && [ -w "$existing_dir" ]; then
+            printf '%s\n' "$existing_dir"
+            return 0
+        fi
+    fi
+
     IFS=':' read -r -a path_dirs <<< "$PATH"
 
     for dir in "${path_dirs[@]}"; do
@@ -53,11 +72,13 @@ install_launcher() {
     local launcher_path="$launcher_dir/opm"
 
     mkdir -p "$launcher_dir"
+    mkdir -p "$STATE_DIR"
     cat > "$launcher_path" <<EOF
 #!/bin/sh
 exec node "$INSTALL_DIR/src/cli.js" "\$@"
 EOF
     chmod +x "$launcher_path"
+    printf '%s\n' "$launcher_dir" > "$STATE_FILE"
 
     echo "🔗 Installed launcher: $launcher_path"
 
