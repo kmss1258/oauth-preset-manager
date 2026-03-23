@@ -274,32 +274,32 @@ function calculateColWidths(totalWidth) {
   if (availableWidth < 80) {
     return {
       provider: 12,
-      daily: 16,
-      reset: 8,
+      daily: 14,
+      reset: 10,
       weekly: 0,
       weekly_reset: 0,
-      account: 20,
-      presets: Math.max(20, availableWidth - 76),
+      account: 18,
+      presets: Math.max(12, availableWidth - 52),
     };
   } else if (availableWidth < 100) {
     return {
       provider: 14,
-      daily: 12,
-      reset: 8,
-      weekly: 12,
-      weekly_reset: 8,
-      account: 24,
-      presets: Math.max(20, availableWidth - 88),
+      daily: 14,
+      reset: 12,
+      weekly: 14,
+      weekly_reset: 12,
+      account: 22,
+      presets: Math.max(12, availableWidth - 82),
     };
   } else {
     return {
       provider: 16,
-      daily: 12,
-      reset: 8,
-      weekly: 12,
-      weekly_reset: 8,
-      account: 28,
-      presets: Math.min(40, availableWidth - 116),
+      daily: 14,
+      reset: 12,
+      weekly: 14,
+      weekly_reset: 12,
+      account: 26,
+      presets: Math.max(16, Math.min(40, availableWidth - 94)),
     };
   }
 }
@@ -745,9 +745,44 @@ async function renderGoogleModelsDetail(results, termWidth) {
   console.log();
 }
 
+function waitForQuotaKeypress() {
+  if (!process.stdin.isTTY) return Promise.resolve('return');
+
+  return new Promise(resolve => {
+    readline.emitKeypressEvents(process.stdin);
+    const wasRawMode = process.stdin.isRaw;
+
+    if (process.stdin.setRawMode && !wasRawMode) {
+      process.stdin.setRawMode(true);
+    }
+
+    const cleanup = () => {
+      process.stdin.off('keypress', onKeypress);
+      if (process.stdin.setRawMode && !wasRawMode) {
+        process.stdin.setRawMode(false);
+      }
+    };
+
+    const onKeypress = (_str, key) => {
+      const name = key?.name || _str;
+      if (name === 'r' || name === 'g' || name === 'q' || name === 'escape' || name === 'return' || name === 'enter') {
+        cleanup();
+        resolve(name === 'enter' ? 'return' : name);
+      }
+    };
+
+    process.stdin.on('keypress', onKeypress);
+    process.stdin.resume();
+  });
+}
+
 async function renderQuotaTableWithToggle(results, showGoogle = true) {
   const termWidth = getTerminalWidth();
   const normalized = normalizeQuotaResults(results);
+  if (!normalized.length) {
+    console.log(chalk.dim(t('quota_no_results')));
+    return;
+  }
   const openaiItems = normalized.filter(r => r.provider === 'openai');
   const googleItems = normalized.filter(r => r.provider === 'google');
   
@@ -867,16 +902,17 @@ async function cmdQuota(manager) {
   console.log();
   
   try {
-    const results = await manager.collectAllQuota();
-    const normalizedResults = normalizeQuotaResults(results);
+    let normalizedResults = normalizeQuotaResults(await manager.collectAllQuota());
     const termWidth = getTerminalWidth();
+    const interactive = process.stdin.isTTY && process.stdout.isTTY;
     let showGoogleDetail = false;
     let showGoogleInTable = false;
-    const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
     
     while (true) {
       console.clear();
       printHeader();
+
+      const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
       
       if (termWidth >= 80) {
         await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable);
@@ -887,46 +923,28 @@ async function cmdQuota(manager) {
         }
       }
       
-      if (googleCount === 0) {
-        await input({ message: chalk.dim('  Press Enter to exit...') });
+      if (!interactive) {
         break;
       }
-      
-      const choices = [];
-      
-      if (termWidth >= 80) {
-        choices.push({
-          name: showGoogleInTable
-            ? chalk.yellow(`  📂 Hide Google models (${googleCount} models)`)
-            : chalk.blue(`  📂 Show Google models (${googleCount} models)`),
-          value: 'toggle_google_table'
-        });
-      } else {
-        choices.push({
-          name: showGoogleDetail 
-            ? chalk.yellow('  📂 Collapse Google models')
-            : chalk.blue(`  📂 Expand Google models (${googleCount} models)`),
-          value: 'toggle_google_compact'
-        });
+
+      console.log(chalk.dim('  [r] Refresh  [g] Toggle Google details  [q] Exit'));
+      const action = await waitForQuotaKeypress();
+
+      if (action === 'r') {
+        normalizedResults = normalizeQuotaResults(await manager.collectAllQuota());
+        continue;
       }
-      
-      choices.push({
-        name: chalk.gray('  ❌ Exit'),
-        value: 'exit'
-      });
-      
-      const action = await select({
-        message: chalk.cyan('  ➜ Select action:'),
-        choices
-      });
-      
-      if (action === 'exit') {
-        break;
-      } else if (action === 'toggle_google_compact') {
-        showGoogleDetail = !showGoogleDetail;
-      } else if (action === 'toggle_google_table') {
-        showGoogleInTable = !showGoogleInTable;
+
+      if (action === 'g') {
+        if (termWidth >= 80) {
+          showGoogleInTable = !showGoogleInTable;
+        } else {
+          showGoogleDetail = !showGoogleDetail;
+        }
+        continue;
       }
+
+      break;
     }
   } catch (e) {
     console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
