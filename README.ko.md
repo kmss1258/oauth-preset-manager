@@ -12,7 +12,7 @@ curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/i
 
 > **참고:** `~/.local/bin`을 PATH에 추가해야 할 수 있습니다. 설치 프로그램이 안내해드립니다.
 
-> `opm`가 이미 설치되어 있어도 이 명령은 기존 설치를 업데이트합니다.
+> 설치 프로그램은 PATH에서 쓰기 가능한 첫 디렉터리(없으면 `~/.local/bin`)에 `opm` 실행기를 만듭니다.
 
 ## 🚀 빠른 시작
 

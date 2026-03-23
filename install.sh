@@ -34,11 +34,47 @@ check_node() {
     echo "✅ Node.js $(node -v) found"
 }
 
+find_launcher_dir() {
+    IFS=':' read -r -a path_dirs <<< "$PATH"
+
+    for dir in "${path_dirs[@]}"; do
+        if [ -n "$dir" ] && [ "$dir" != "." ] && [ -d "$dir" ] && [ -w "$dir" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+
+    mkdir -p "$HOME/.local/bin"
+    printf '%s\n' "$HOME/.local/bin"
+}
+
+install_launcher() {
+    local launcher_dir="$1"
+    local launcher_path="$launcher_dir/opm"
+
+    mkdir -p "$launcher_dir"
+    cat > "$launcher_path" <<EOF
+#!/bin/sh
+exec node "$INSTALL_DIR/src/cli.js" "\$@"
+EOF
+    chmod +x "$launcher_path"
+
+    echo "🔗 Installed launcher: $launcher_path"
+
+    case ":$PATH:" in
+        *":$launcher_dir:"*) ;;
+        *)
+            echo "⚠️  '$launcher_dir' is not on your PATH yet."
+            echo "   Add it to PATH to run 'opm' from any terminal."
+            ;;
+    esac
+}
+
 install_local() {
     if [ -f "package.json" ] && [ -d "src" ]; then
         echo "📦 Installing from local directory..."
         npm install
-        npm link
+        install_launcher "$(find_launcher_dir)"
         return 0
     fi
     return 1
@@ -68,8 +104,8 @@ install_from_git() {
     
     echo "📦 Installing dependencies..."
     npm install
-    
-    npm link
+
+    install_launcher "$(find_launcher_dir)"
 }
 
 main() {

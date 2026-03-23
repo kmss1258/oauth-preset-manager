@@ -44,14 +44,14 @@ opm
 ```bash
 curl -sSL https://raw.githubusercontent.com/kmss1258/oauth-preset-manager/main/install.sh | bash
 ```
-> If `opm` is already installed, this updates the existing install instead of creating a second one.
+> The installer writes an `opm` launcher into the first writable directory on your PATH (or `~/.local/bin` as a fallback).
 
 ### Manual Install
 ```bash
 git clone https://github.com/kmss1258/oauth-preset-manager.git
 cd oauth-preset-manager
 npm install
-npm link
+./install.sh
 ```
 
 ## 📖 Usage
