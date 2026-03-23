@@ -278,7 +278,7 @@ function calculateColWidths(totalWidth) {
       reset: 10,
       weekly: 0,
       weekly_reset: 0,
-      account: Math.max(12, availableWidth - 38),
+      account: Math.min(40, Math.max(12, availableWidth - 38)),
     };
   } else if (availableWidth < 100) {
     return {
@@ -287,7 +287,7 @@ function calculateColWidths(totalWidth) {
       reset: 12,
       weekly: 18,
       weekly_reset: 12,
-      account: Math.max(12, availableWidth - 66),
+      account: Math.min(40, Math.max(12, availableWidth - 66)),
     };
   } else {
     return {
@@ -296,7 +296,7 @@ function calculateColWidths(totalWidth) {
       reset: 12,
       weekly: 18,
       weekly_reset: 12,
-      account: Math.max(12, availableWidth - 68),
+      account: Math.min(40, Math.max(12, availableWidth - 68)),
     };
   }
 }
