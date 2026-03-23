@@ -274,7 +274,7 @@ function calculateColWidths(totalWidth) {
   if (availableWidth < 80) {
     return {
       provider: 12,
-      daily: 16,
+      daily: 18,
       reset: 10,
       weekly: 0,
       weekly_reset: 0,
@@ -283,18 +283,18 @@ function calculateColWidths(totalWidth) {
   } else if (availableWidth < 100) {
     return {
       provider: 14,
-      daily: 14,
+      daily: 18,
       reset: 12,
-      weekly: 14,
+      weekly: 18,
       weekly_reset: 12,
       account: Math.max(12, availableWidth - 66),
     };
   } else {
     return {
       provider: 16,
-      daily: 14,
+      daily: 18,
       reset: 12,
-      weekly: 14,
+      weekly: 18,
       weekly_reset: 12,
       account: Math.max(12, availableWidth - 68),
     };
@@ -441,15 +441,15 @@ function renderQuotaTable(results) {
     const weekly = result.weekly;
     const accountId = result.account_id || '';
     const nickname = result.nickname;
-    const accountDisplay = nickname 
-      ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
+    const accountDisplay = nickname
+      ? `${chalk.yellow(nickname)} ${chalk.dim(`(${accountId})`)}`
       : chalk.yellow(accountId);
     const presetsList = result.presets || [];
     const error = result.error;
 
     let provider = result.provider || chalk.gray('-');
     if (provider === 'google' && daily.label) {
-      provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
+      provider = `${chalk.blue('google')} ${chalk.dim('(' + daily.label.slice(0, widths.provider - 8) + ')')}`;
     } else if (provider === 'openai') {
       provider = chalk.green('openai');
     }
@@ -465,14 +465,14 @@ function renderQuotaTable(results) {
         accountDisplay,
       ];
     } else {
-      const dailyData = formatPercentTwoLine(daily.percent_remaining);
-      const weeklyData = formatPercentTwoLine(weekly?.percent_remaining);
+      const dailyData = formatPercent(daily.percent_remaining);
+      const weeklyData = formatPercent(weekly?.percent_remaining);
       
       row = [
         provider,
-        `${dailyData.bar}\n${dailyData.percent}`,
+        dailyData,
         formatReset(daily.reset_time_iso),
-        `${weeklyData.bar}\n${weeklyData.percent}`,
+        weeklyData,
         formatReset(weekly?.reset_time_iso),
         accountDisplay,
       ];
@@ -824,8 +824,8 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
     const weekly = result.weekly;
     const accountId = result.account_id || '';
     const nickname = result.nickname;
-    const accountDisplay = nickname 
-      ? `${chalk.yellow(nickname)}\n${chalk.dim(accountId)}`
+    const accountDisplay = nickname
+      ? `${chalk.yellow(nickname)} ${chalk.dim(`(${accountId})`)}`
       : chalk.yellow(accountId);
     const presetsList = result.presets || [];
     const error = result.error;
@@ -834,7 +834,7 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
     if (provider === 'google') {
       provider = chalk.blue('google');
       if (daily.label) {
-        provider = `${chalk.blue('google')}\n${chalk.dim('(' + daily.label.slice(0, widths.provider - 4) + ')')}`;
+        provider = `${chalk.blue('google')} ${chalk.dim('(' + daily.label.slice(0, widths.provider - 8) + ')')}`;
       }
     } else if (provider === 'openai') {
       provider = chalk.green('openai');
@@ -851,10 +851,10 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
         accountDisplay,
       ];
     } else {
-      const dailyData = formatPercentTwoLine(daily.percent_remaining);
-      const weeklyData = formatPercentTwoLine(weekly?.percent_remaining);
+      const dailyData = formatPercent(daily.percent_remaining);
+      const weeklyData = formatPercent(weekly?.percent_remaining);
       const weeklyDisplay = result.provider === 'openai'
-        ? `${weeklyData.bar}\n${weeklyData.percent}`
+        ? weeklyData
         : chalk.gray('-');
       const weeklyResetDisplay = result.provider === 'openai'
         ? formatReset(weekly?.reset_time_iso)
@@ -862,7 +862,7 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
 
       row = [
         provider,
-        `${dailyData.bar}\n${dailyData.percent}`,
+        dailyData,
         formatReset(daily.reset_time_iso),
         weeklyDisplay,
         weeklyResetDisplay,
