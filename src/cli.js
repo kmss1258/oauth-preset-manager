@@ -217,7 +217,8 @@ function deduplicateResults(results) {
   
   for (const result of results) {
     const isCurrent = (result.presets || []).some(p => p.includes('Current Active'));
-    const key = `${result.provider}-${result.account_id}-${result.daily?.label || 'default'}-${isCurrent ? 'current' : 'preset'}`;
+    const presetSignature = (result.presets || []).slice().sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })).join('|') || '-';
+    const key = `${result.provider}-${result.account_id}-${result.daily?.label || 'default'}-${isCurrent ? 'current' : 'preset'}-${presetSignature}`;
     const existing = seen.get(key);
     
     if (!existing) {
@@ -286,7 +287,7 @@ function sortResultsByPresetName(results) {
   return entries.map(entry => entry.r);
 }
 
-function normalizeQuotaResults(results) {
+export function normalizeQuotaResults(results) {
   return sortResultsByPresetName(deduplicateResults(results));
 }
 
