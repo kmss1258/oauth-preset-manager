@@ -61,7 +61,9 @@ export class PresetManager {
     this.presetsDir = join(this.configDir, 'presets');
     this.backupsDir = join(this.configDir, 'backups');
     this.configFile = join(this.configDir, 'config.json');
+    this.quotaCacheFile = join(this.configDir, 'quota-cache.json');
     this.config = null;
+    this.quotaCache = this._createEmptyQuotaCache();
     this._requestJson = httpsRequest;
   }
 
@@ -69,7 +71,15 @@ export class PresetManager {
     await fs.mkdir(this.presetsDir, { recursive: true });
     await fs.mkdir(this.backupsDir, { recursive: true });
     this.config = await this._loadConfig();
+    this.quotaCache = await this._loadQuotaCache();
     await this._normalizeAuthPath();
+  }
+
+  _createEmptyQuotaCache() {
+    return {
+      version: 1,
+      presets: {},
+    };
   }
 
   async _loadConfig() {
@@ -111,6 +121,26 @@ export class PresetManager {
 
   async _saveConfig() {
     await fs.writeFile(this.configFile, JSON.stringify(this.config, null, 2));
+  }
+
+  async _loadQuotaCache() {
+    try {
+      const data = JSON.parse(await fs.readFile(this.quotaCacheFile, 'utf-8'));
+      if (typeof data === 'object' && data !== null) {
+        return {
+          version: 1,
+          presets: typeof data.presets === 'object' && data.presets !== null ? data.presets : {},
+        };
+      }
+    } catch {}
+
+    return this._createEmptyQuotaCache();
+  }
+
+  async _saveQuotaCache() {
+    const tmpPath = `${this.quotaCacheFile}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(this.quotaCache, null, 2));
+    await fs.rename(tmpPath, this.quotaCacheFile);
   }
 
   getAuthPath() {
@@ -320,6 +350,7 @@ export class PresetManager {
           last_used: metadata.last_used || 'Never',
           description: metadata.description || '',
           services,
+          quota_snapshot: this.quotaCache?.presets?.[name] || null,
           is_current: name === this.config.current_preset,
         });
       }
@@ -361,6 +392,11 @@ export class PresetManager {
 
     if (this.config.presets[name]) {
       delete this.config.presets[name];
+    }
+
+    if (this.quotaCache?.presets?.[name]) {
+      delete this.quotaCache.presets[name];
+      await this._saveQuotaCache();
     }
 
     if (this.config.current_preset === name) {
@@ -440,6 +476,7 @@ export class PresetManager {
       const existing = tokenMap.get(entry.access);
       if (existing) {
         existing.presets.push(formatPresetLabel(presetName));
+        existing.preset_names.push(presetName);
         if (!existing.nickname) {
           existing.nickname = presetName;
         }
@@ -449,6 +486,7 @@ export class PresetManager {
           expires: entry.expires,
           account_id: entry.account_id,
           presets: [formatPresetLabel(presetName)],
+          preset_names: [presetName],
           nickname: presetName,
         });
       }
@@ -466,6 +504,7 @@ export class PresetManager {
         this._fetchOpenAIQuotaForToken(item.access, item.expires, item.account_id)
           .then(result => {
             result.presets = item.presets.sort();
+            result.preset_names = item.preset_names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
             if (item.nickname) {
               result.nickname = item.nickname;
             }
@@ -554,6 +593,69 @@ export class PresetManager {
       this.collectOpenAIQuota(),
     ]);
     return [...active, ...openai];
+  }
+
+  _extractPresetNameFromLabel(label) {
+    if (!label || label.startsWith('(')) return null;
+    const idx = label.indexOf(' (');
+    if (idx > 0) return label.slice(0, idx);
+    return label;
+  }
+
+  async cacheQuotaResults(results, fetchedAt = new Date().toISOString()) {
+    if (!Array.isArray(results) || results.length === 0) {
+      return;
+    }
+
+    let changed = false;
+    const presets = this.quotaCache.presets || {};
+
+    for (const result of results) {
+      if (result?.provider !== 'openai') continue;
+
+      const presetNames = Array.isArray(result.preset_names) && result.preset_names.length > 0
+        ? result.preset_names.slice()
+        : (result.presets || [])
+            .map(label => this._extractPresetNameFromLabel(label))
+            .filter(Boolean);
+
+      if (presetNames.length === 0) continue;
+
+      for (const presetName of presetNames) {
+        const existing = presets[presetName] || null;
+        const next = {
+          provider: 'openai',
+          account_id: result.account_id || existing?.account_id || null,
+          daily_percent: existing?.daily_percent ?? null,
+          weekly_percent: existing?.weekly_percent ?? null,
+          last_attempt_at: fetchedAt,
+          last_success_at: existing?.last_success_at || null,
+          last_error: result.error || null,
+        };
+
+        if (!result.error) {
+          next.daily_percent = result.daily?.percent_remaining ?? null;
+          next.weekly_percent = result.weekly?.percent_remaining ?? null;
+          next.last_success_at = fetchedAt;
+          next.last_error = null;
+        }
+
+        if (JSON.stringify(existing) !== JSON.stringify(next)) {
+          presets[presetName] = next;
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.quotaCache = {
+      version: 1,
+      presets,
+    };
+    await this._saveQuotaCache();
   }
 
   _extractOpenAIOAuth(authData) {
