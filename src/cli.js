@@ -182,6 +182,18 @@ function formatRelativeAge(isoString, now = new Date()) {
   return `${totalDays}d ago`;
 }
 
+function colorizeQuotaValue(value, label) {
+  if (value == null) {
+    return chalk.gray(`${label}-`);
+  }
+
+  let color = chalk.green;
+  if (value < 20) color = chalk.red;
+  else if (value < 50) color = chalk.yellow;
+
+  return `${chalk.dim(label)}${color(`${value}%`)}`;
+}
+
 export function buildPresetQuotaSummary(preset, now = new Date()) {
   const snapshot = preset?.quota_snapshot;
   if (!snapshot || snapshot.provider !== 'openai') {
@@ -190,6 +202,8 @@ export function buildPresetQuotaSummary(preset, now = new Date()) {
 
   const daily = snapshot.daily_percent == null ? '-' : `${snapshot.daily_percent}%`;
   const weekly = snapshot.weekly_percent == null ? '-' : `${snapshot.weekly_percent}%`;
+  const dailyDisplay = colorizeQuotaValue(snapshot.daily_percent, 'D');
+  const weeklyDisplay = colorizeQuotaValue(snapshot.weekly_percent, 'W');
   const lastSuccessAge = formatRelativeAge(snapshot.last_success_at, now);
   const errorText = truncateText(snapshot.last_error || '', 28);
 
@@ -198,20 +212,23 @@ export function buildPresetQuotaSummary(preset, now = new Date()) {
       const ageSuffix = lastSuccessAge ? ` · ${lastSuccessAge}` : '';
       const errorSuffix = errorText ? ` · ${errorText}` : '';
       return {
-        text: `OAI D${daily} W${weekly} · stale${ageSuffix}${errorSuffix}`,
+        text: `OAI ${dailyDisplay} ${weeklyDisplay} · stale${ageSuffix}${errorSuffix}`,
+        plainText: `OAI D${daily} W${weekly} · stale${ageSuffix}${errorSuffix}`,
         tone: 'warn',
       };
     }
 
     return {
       text: errorText ? `OAI fetch failed · ${errorText}` : 'OAI fetch failed',
+      plainText: errorText ? `OAI fetch failed · ${errorText}` : 'OAI fetch failed',
       tone: 'error',
     };
   }
 
   const ageSuffix = lastSuccessAge ? ` · ${lastSuccessAge}` : '';
   return {
-    text: `OAI D${daily} W${weekly}${ageSuffix}`,
+    text: `OAI ${dailyDisplay} ${weeklyDisplay}${ageSuffix}`,
+    plainText: `OAI D${daily} W${weekly}${ageSuffix}`,
     tone: 'info',
   };
 }
@@ -222,7 +239,11 @@ function formatPresetChoiceQuotaSuffix(preset) {
     return '';
   }
 
-  const compact = truncateText(summary.text, 30);
+  if (!summary.plainText || summary.plainText.length <= 30) {
+    return chalk.dim('  ·  ') + summary.text;
+  }
+
+  const compact = truncateText(summary.plainText, 30);
   return chalk.dim(`  ·  ${compact}`);
 }
 

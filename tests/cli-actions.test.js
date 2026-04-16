@@ -86,7 +86,10 @@ test('preset quota summary marks stale cached data after an error', () => {
   }, new Date('2026-04-16T10:30:00.000Z'));
 
   assert.deepEqual(summary, {
-    text: 'OAI D42% W77% · stale · 1h ago · OpenAI API error: timeout',
+    text: summary.text,
+    plainText: 'OAI D42% W77% · stale · 1h ago · OpenAI API error: timeout',
     tone: 'warn',
   });
+  assert.match(summary.text, /D42%/);
+  assert.match(summary.text, /W77%/);
 });
