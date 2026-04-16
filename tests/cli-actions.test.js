@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildInteractiveChoices, normalizeQuotaActionKey, normalizeQuotaResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, normalizeQuotaActionKey, normalizeQuotaResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -50,4 +50,43 @@ test('quota normalization preserves distinct preset rows for the same OpenAI acc
     '260415_buts2_2_260425',
     '260415_buts2_260421',
   ]);
+});
+
+test('interactive choices show cached OpenAI quota summary next to preset names', () => {
+  const choices = buildInteractiveChoices([
+    {
+      name: 'alpha',
+      is_current: true,
+      description: '',
+      quota_snapshot: {
+        provider: 'openai',
+        daily_percent: 42,
+        weekly_percent: 77,
+        last_success_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        last_attempt_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        last_error: null,
+      },
+    },
+  ]);
+
+  assert.match(choices[0].name, /alpha/);
+  assert.match(choices[0].name, /OAI D42% W77%/);
+});
+
+test('preset quota summary marks stale cached data after an error', () => {
+  const summary = buildPresetQuotaSummary({
+    quota_snapshot: {
+      provider: 'openai',
+      daily_percent: 42,
+      weekly_percent: 77,
+      last_success_at: '2026-04-16T09:00:00.000Z',
+      last_attempt_at: '2026-04-16T10:00:00.000Z',
+      last_error: 'OpenAI API error: timeout',
+    },
+  }, new Date('2026-04-16T10:30:00.000Z'));
+
+  assert.deepEqual(summary, {
+    text: 'OAI D42% W77% · stale · 1h ago · OpenAI API error: timeout',
+    tone: 'warn',
+  });
 });

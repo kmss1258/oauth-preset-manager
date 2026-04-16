@@ -56,7 +56,7 @@ export function normalizeQuotaActionKey(text) {
 export function buildInteractiveChoices(presets) {
   return [
     ...presets.map((p, i) => ({
-      name: `  ${chalk.cyan(i + 1 + '.')} ${p.is_current ? chalk.green('●') : chalk.gray('○')} ${p.name}`,
+      name: `  ${chalk.cyan(i + 1 + '.')} ${p.is_current ? chalk.green('●') : chalk.gray('○')} ${p.name}${formatPresetChoiceQuotaSuffix(p)}`,
       value: p.name,
       description: p.description || chalk.gray('No description')
     })),
@@ -145,7 +145,85 @@ function printPresetCard(preset, index, isActive, isCurrent) {
   console.log(`  ${icon} ${index + 1}. ${name}${status}`);
   if (desc) console.log(`     ${desc}`);
   console.log(`     ${chalk.dim('Services:')} ${chalk.blue(services)} ${chalk.dim('│ Last used:')} ${chalk.yellow(preset.last_used || 'Never')}`);
+  const quotaSummary = buildPresetQuotaSummary(preset);
+  if (quotaSummary) {
+    const color = quotaSummary.tone === 'error'
+      ? chalk.red
+      : quotaSummary.tone === 'warn'
+        ? chalk.yellow
+        : chalk.cyan;
+    console.log(`     ${chalk.dim('Quota:')} ${color(quotaSummary.text)}`);
+  }
   console.log();
+}
+
+function truncateText(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function formatRelativeAge(isoString, now = new Date()) {
+  if (!isoString) return null;
+
+  const target = new Date(isoString);
+  if (Number.isNaN(target.getTime())) return null;
+
+  const diffMs = Math.max(0, now.getTime() - target.getTime());
+  const totalMinutes = Math.floor(diffMs / 60000);
+
+  if (totalMinutes < 1) return 'just now';
+  if (totalMinutes < 60) return `${totalMinutes}m ago`;
+
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h ago`;
+
+  const totalDays = Math.floor(totalHours / 24);
+  return `${totalDays}d ago`;
+}
+
+export function buildPresetQuotaSummary(preset, now = new Date()) {
+  const snapshot = preset?.quota_snapshot;
+  if (!snapshot || snapshot.provider !== 'openai') {
+    return null;
+  }
+
+  const daily = snapshot.daily_percent == null ? '-' : `${snapshot.daily_percent}%`;
+  const weekly = snapshot.weekly_percent == null ? '-' : `${snapshot.weekly_percent}%`;
+  const lastSuccessAge = formatRelativeAge(snapshot.last_success_at, now);
+  const errorText = truncateText(snapshot.last_error || '', 28);
+
+  if (snapshot.last_error) {
+    if (snapshot.last_success_at) {
+      const ageSuffix = lastSuccessAge ? ` · ${lastSuccessAge}` : '';
+      const errorSuffix = errorText ? ` · ${errorText}` : '';
+      return {
+        text: `OAI D${daily} W${weekly} · stale${ageSuffix}${errorSuffix}`,
+        tone: 'warn',
+      };
+    }
+
+    return {
+      text: errorText ? `OAI fetch failed · ${errorText}` : 'OAI fetch failed',
+      tone: 'error',
+    };
+  }
+
+  const ageSuffix = lastSuccessAge ? ` · ${lastSuccessAge}` : '';
+  return {
+    text: `OAI D${daily} W${weekly}${ageSuffix}`,
+    tone: 'info',
+  };
+}
+
+function formatPresetChoiceQuotaSuffix(preset) {
+  const summary = buildPresetQuotaSummary(preset);
+  if (!summary) {
+    return '';
+  }
+
+  const compact = truncateText(summary.text, 30);
+  return chalk.dim(`  ·  ${compact}`);
 }
 
 function printMenuSection() {
@@ -962,7 +1040,14 @@ async function cmdQuota(manager) {
   console.log();
   
   try {
-    let normalizedResults = normalizeQuotaResults(await manager.collectAllQuota());
+    let cacheWarning = null;
+    const initialResults = await manager.collectAllQuota();
+    try {
+      await manager.cacheQuotaResults(initialResults);
+    } catch (error) {
+      cacheWarning = error.message;
+    }
+    let normalizedResults = normalizeQuotaResults(initialResults);
     const termWidth = getTerminalWidth();
     const interactive = process.stdin.isTTY && process.stdout.isTTY;
     let showGoogleDetail = false;
@@ -982,6 +1067,11 @@ async function cmdQuota(manager) {
           await renderGoogleModelsDetail(normalizedResults, termWidth);
         }
       }
+
+      if (cacheWarning) {
+        console.log(chalk.red(`  ⚠ Quota cache save failed: ${cacheWarning}`));
+        console.log();
+      }
       
       if (!interactive) {
         break;
@@ -991,7 +1081,14 @@ async function cmdQuota(manager) {
       const action = await waitForQuotaKeypress();
 
       if (action === 'r') {
-        normalizedResults = normalizeQuotaResults(await manager.collectAllQuota());
+        const refreshedResults = await manager.collectAllQuota();
+        cacheWarning = null;
+        try {
+          await manager.cacheQuotaResults(refreshedResults);
+        } catch (error) {
+          cacheWarning = error.message;
+        }
+        normalizedResults = normalizeQuotaResults(refreshedResults);
         continue;
       }
 
