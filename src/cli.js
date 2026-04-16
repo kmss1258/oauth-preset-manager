@@ -35,6 +35,66 @@ const BOX = {
   b: '┴',
 };
 
+export const QUOTA_FOOTER_TEXT = '  [r] Refresh  [g] Toggle Google details  [q] Exit';
+
+export function normalizeQuotaActionKey(text) {
+  if (typeof text !== 'string') return null;
+
+  const trimmed = text.trim();
+  if (trimmed === 'ㄱ') {
+    return 'r';
+  }
+
+  const key = trimmed.toLowerCase();
+  if (key === 'r' || key === 'g' || key === 'q') {
+    return key;
+  }
+
+  return null;
+}
+
+export function buildInteractiveChoices(presets) {
+  return [
+    ...presets.map((p, i) => ({
+      name: `  ${chalk.cyan(i + 1 + '.')} ${p.is_current ? chalk.green('●') : chalk.gray('○')} ${p.name}`,
+      value: p.name,
+      description: p.description || chalk.gray('No description')
+    })),
+    new Separator(chalk.gray('  ' + BOX.h.repeat(48))),
+    {
+      name: `  ${chalk.green('💾')} ${t('save_new_preset')}`,
+      value: '__save__',
+      description: 'Save current auth as new preset'
+    },
+    {
+      name: `  ${chalk.blue('📝')} ${t('view_description')}`,
+      value: '__view__',
+      description: 'View preset details'
+    },
+    {
+      name: `  ${chalk.magenta('📊')} ${t('view_quota')}`,
+      value: '__quota__',
+      description: 'Check quota usage'
+    },
+    {
+      name: `  ${chalk.yellow('🧠')} ${t('openai_quota_kickoff')}`,
+      value: '__openai_kickoff__',
+      description: 'Send one GPT-5.4 mini request to each OpenAI target'
+    },
+    {
+      name: `  ${chalk.yellow('🗑️')} ${t('delete_preset')}`,
+      value: '__delete__',
+      description: 'Delete a preset'
+    },
+    new Separator(),
+    {
+      name: `  ${chalk.red('❌')} ${t('exit')}`,
+      value: '__exit__',
+      description: 'Exit OPM'
+    },
+  ];
+}
+
 function printHeader() {
   console.clear();
   console.log();
@@ -768,8 +828,8 @@ function waitForQuotaKeypress() {
         return;
       }
 
-      const key = text.trim().toLowerCase();
-      if (key === 'r' || key === 'g' || key === 'q') {
+      const key = normalizeQuotaActionKey(text);
+      if (key) {
         cleanup();
         resolve(key);
       }
@@ -926,7 +986,7 @@ async function cmdQuota(manager) {
         break;
       }
 
-      console.log(chalk.dim('  [r] Refresh  [g] Toggle Google details  [q] Exit'));
+      console.log(chalk.dim(QUOTA_FOOTER_TEXT));
       const action = await waitForQuotaKeypress();
 
       if (action === 'r') {
@@ -947,6 +1007,54 @@ async function cmdQuota(manager) {
     }
   } catch (e) {
     console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
+  }
+}
+
+async function runOpenAIKickoffInteractive(manager) {
+  console.clear();
+  printHeader();
+  console.log(chalk.yellow.bold('  🧠 ' + t('running_openai_kickoff')));
+  console.log();
+
+  try {
+    const batch = await manager.runOpenAIKickoffBatch();
+    const results = batch.results || [];
+
+    if (results.length === 0) {
+      console.log(chalk.yellow(`  ⚠ ${t('openai_kickoff_no_targets')}`));
+      console.log();
+      return;
+    }
+
+    const succeeded = results.filter(result => !result.error).length;
+    const failed = results.length - succeeded;
+
+    printInfoBox(t('openai_kickoff_title'), [
+      `Model: ${batch.model}`,
+      `${t('openai_kickoff_targets')}: ${results.length}`,
+      `${t('openai_kickoff_success')}: ${succeeded}`,
+      `${t('openai_kickoff_failed')}: ${failed}`,
+    ]);
+
+    for (const [index, result] of results.entries()) {
+      const label = result.nickname || result.email || result.account_id || '-';
+      const suffix = result.account_id ? chalk.dim(` (${result.account_id})`) : '';
+      const status = result.error ? chalk.red('✗') : chalk.green('✓');
+      console.log(`  ${status} ${index + 1}. ${chalk.yellow(label)}${suffix}`);
+
+      if (result.output_text) {
+        console.log(`     ${chalk.dim(result.output_text.slice(0, 80))}`);
+      }
+
+      if (result.error) {
+        console.log(`     ${chalk.red(result.error)}`);
+      }
+
+      console.log();
+    }
+  } catch (error) {
+    console.log(chalk.red(`  ✗ ${t('error')}: ${error.message}`));
+    console.log();
   }
 }
 
@@ -1035,40 +1143,7 @@ async function interactiveMode(manager) {
 
     printMenuSection();
 
-    const choices = [
-      ...presets.map((p, i) => ({ 
-        name: `  ${chalk.cyan(i + 1 + '.')} ${p.is_current ? chalk.green('●') : chalk.gray('○')} ${p.name}`, 
-        value: p.name,
-        description: p.description || chalk.gray('No description')
-      })),
-      new Separator(chalk.gray('  ' + BOX.h.repeat(48))),
-      { 
-        name: `  ${chalk.green('💾')} ${t('save_new_preset')}`, 
-        value: '__save__',
-        description: 'Save current auth as new preset'
-      },
-      { 
-        name: `  ${chalk.blue('📝')} ${t('view_description')}`, 
-        value: '__view__',
-        description: 'View preset details'
-      },
-      { 
-        name: `  ${chalk.magenta('📊')} ${t('view_quota')}`, 
-        value: '__quota__',
-        description: 'Check quota usage'
-      },
-      { 
-        name: `  ${chalk.yellow('🗑️')} ${t('delete_preset')}`, 
-        value: '__delete__',
-        description: 'Delete a preset'
-      },
-      new Separator(),
-      { 
-        name: `  ${chalk.red('❌')} ${t('exit')}`, 
-        value: '__exit__',
-        description: 'Exit OPM'
-      },
-    ];
+    const choices = buildInteractiveChoices(presets);
 
     const selection = await select({
       message: chalk.cyan.bold('  ➜ ' + t('select_preset')),
@@ -1093,6 +1168,10 @@ async function interactiveMode(manager) {
         break;
       case '__quota__':
         await cmdQuota(manager);
+        await input({ message: chalk.dim('Press Enter to continue...') });
+        break;
+      case '__openai_kickoff__':
+        await runOpenAIKickoffInteractive(manager);
         await input({ message: chalk.dim('Press Enter to continue...') });
         break;
       case '__delete__':
@@ -1156,7 +1235,11 @@ async function main() {
   }
 }
 
-main().catch(e => {
-  console.error(chalk.red(`Fatal error: ${e.message}`));
-  process.exit(1);
-});
+const isDirectExecution = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+  main().catch(e => {
+    console.error(chalk.red(`Fatal error: ${e.message}`));
+    process.exit(1);
+  });
+}
