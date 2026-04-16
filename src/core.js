@@ -6,9 +6,14 @@ import { env } from 'process';
 
 const ANTIGRAVITY_CLIENT_ID = env.OPM_ANTIGRAVITY_CLIENT_ID?.trim() || '';
 const ANTIGRAVITY_CLIENT_SECRET = env.OPM_ANTIGRAVITY_CLIENT_SECRET?.trim() || '';
+const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+const OPENAI_AUTH_ISSUER = 'https://auth.openai.com';
 const OPENAI_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+const OPENAI_CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const GOOGLE_QUOTA_API_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
 const GOOGLE_TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
+const OPENAI_KICKOFF_MODEL = 'gpt-5.4-mini';
+const OPENAI_KICKOFF_INPUT = 'Reply with exactly OK.';
 
 const GOOGLE_MODEL_KEYS = {
   'gemini-3-pro-high': 'G3Pro',
@@ -57,6 +62,7 @@ export class PresetManager {
     this.backupsDir = join(this.configDir, 'backups');
     this.configFile = join(this.configDir, 'config.json');
     this.config = null;
+    this._requestJson = httpsRequest;
   }
 
   async init() {
@@ -558,8 +564,194 @@ export class PresetManager {
     
     return {
       access: entry.access,
+      refresh: entry.refresh,
       expires: entry.expires,
       account_id: entry.accountId,
+    };
+  }
+
+  _extractOpenAIIdentity(accessToken, accountId = null) {
+    const payload = parseJWTPayload(accessToken);
+    const authSection = payload?.['https://api.openai.com/auth'];
+    const profile = payload?.['https://api.openai.com/profile'];
+
+    return {
+      account_id: accountId || this._openaiAccountIdFromJWT(accessToken),
+      user_id: typeof authSection?.chatgpt_user_id === 'string' ? authSection.chatgpt_user_id : null,
+      email: typeof profile?.email === 'string' ? profile.email : null,
+      plan_type: typeof authSection?.chatgpt_plan_type === 'string' ? authSection.chatgpt_plan_type : null,
+    };
+  }
+
+  async collectOpenAIKickoffTargets() {
+    const tokenMap = new Map();
+
+    const addTarget = (entry, label, nickname = null) => {
+      if (!entry?.access) return;
+
+      const key = entry.refresh || entry.access;
+      const identity = this._extractOpenAIIdentity(entry.access, entry.account_id);
+      const resolvedAccountId = identity.account_id || entry.account_id || null;
+      const existing = tokenMap.get(key);
+
+      if (existing) {
+        existing.labels.add(label);
+        if (!existing.nickname && nickname) {
+          existing.nickname = nickname;
+        }
+        return;
+      }
+
+      tokenMap.set(key, {
+        access: entry.access,
+        refresh: entry.refresh,
+        expires: entry.expires,
+        account_id: resolvedAccountId,
+        user_id: identity.user_id,
+        email: identity.email,
+        plan_type: identity.plan_type,
+        labels: new Set([label]),
+        nickname: nickname || identity.email || null,
+      });
+    };
+
+    const authPath = this.getAuthPath();
+    try {
+      await fs.access(authPath);
+      const authData = JSON.parse(await fs.readFile(authPath, 'utf-8'));
+      const entry = this._extractOpenAIOAuth(authData);
+      let displayPath = authPath;
+      try {
+        displayPath = authPath.replace(homedir(), '~');
+      } catch {}
+      addTarget(entry, `(Current Active: ${displayPath})`, null);
+    } catch {}
+
+    const presetData = await this.listPresetAuthData();
+    for (const [presetName, authData] of presetData) {
+      const entry = this._extractOpenAIOAuth(authData);
+      if (!entry) continue;
+      const display = join(this.presetsDir, `${presetName}.json`).replace(homedir(), '~');
+      addTarget(entry, `${presetName} (${display})`, presetName);
+    }
+
+    return Array.from(tokenMap.values()).map(target => ({
+      ...target,
+      presets: Array.from(target.labels).sort(),
+    }));
+  }
+
+  async runOpenAIKickoffBatch(timeoutSeconds = 30) {
+    const targets = await this.collectOpenAIKickoffTargets();
+    if (targets.length === 0) {
+      return {
+        model: OPENAI_KICKOFF_MODEL,
+        prompt: OPENAI_KICKOFF_INPUT,
+        results: [],
+      };
+    }
+
+    const results = await Promise.all(
+      targets.map(target => this._runOpenAIKickoffForTarget(target, timeoutSeconds))
+    );
+
+    return {
+      model: OPENAI_KICKOFF_MODEL,
+      prompt: OPENAI_KICKOFF_INPUT,
+      results,
+    };
+  }
+
+  async _runOpenAIKickoffForTarget(target, timeoutSeconds = 30) {
+    try {
+      const auth = await this._ensureOpenAIAccessToken(target);
+      const resolvedAccountId = auth.account_id || this._openaiAccountIdFromJWT(auth.access);
+      const headers = {
+        Authorization: `Bearer ${auth.access}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'opencode/opm',
+        originator: 'opencode',
+      };
+
+      if (resolvedAccountId) {
+        headers['ChatGPT-Account-Id'] = resolvedAccountId;
+      }
+
+      const response = await this._requestJson(
+        OPENAI_CODEX_RESPONSES_URL,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: OPENAI_KICKOFF_MODEL,
+            instructions: OPENAI_KICKOFF_INPUT,
+            input: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'input_text',
+                    text: OPENAI_KICKOFF_INPUT,
+                  },
+                ],
+              },
+            ],
+            stream: true,
+            store: false,
+          }),
+        },
+        timeoutSeconds * 1000,
+      );
+
+      return {
+        provider: 'openai',
+        account_id: resolvedAccountId,
+        user_id: target.user_id,
+        email: target.email,
+        plan_type: target.plan_type,
+        nickname: target.nickname,
+        presets: target.presets,
+        model: OPENAI_KICKOFF_MODEL,
+        output_text: extractOpenAIResponseText(response),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        provider: 'openai',
+        account_id: target.account_id,
+        user_id: target.user_id,
+        email: target.email,
+        plan_type: target.plan_type,
+        nickname: target.nickname,
+        presets: target.presets,
+        model: OPENAI_KICKOFF_MODEL,
+        output_text: null,
+        error: error.message,
+      };
+    }
+  }
+
+  async _ensureOpenAIAccessToken(target) {
+    const hasFreshAccess = typeof target.expires === 'number' && target.expires > Date.now();
+    if (target.access && hasFreshAccess) {
+      return {
+        access: target.access,
+        account_id: target.account_id,
+      };
+    }
+
+    if (!target.refresh) {
+      throw new Error('OpenAI token expired and no refresh token is available');
+    }
+
+    const tokens = await refreshOpenAIToken(target.refresh, this._requestJson);
+    if (!tokens?.access_token) {
+      throw new Error('OpenAI token refresh failed');
+    }
+
+    return {
+      access: tokens.access_token,
+      account_id: extractAccountIdFromTokenSet(tokens) || target.account_id,
     };
   }
 
@@ -803,6 +995,95 @@ function parseJWTPayload(token) {
   return null;
 }
 
+function extractAccountIdFromTokenSet(tokens) {
+  const idTokenClaims = typeof tokens?.id_token === 'string' ? parseJWTPayload(tokens.id_token) : null;
+  const accessTokenClaims = typeof tokens?.access_token === 'string' ? parseJWTPayload(tokens.access_token) : null;
+  const claims = idTokenClaims || accessTokenClaims;
+  const authSection = claims?.['https://api.openai.com/auth'];
+
+  if (typeof claims?.chatgpt_account_id === 'string' && claims.chatgpt_account_id) {
+    return claims.chatgpt_account_id;
+  }
+
+  if (typeof authSection?.chatgpt_account_id === 'string' && authSection.chatgpt_account_id) {
+    return authSection.chatgpt_account_id;
+  }
+
+  const organizations = claims?.organizations;
+  if (Array.isArray(organizations) && typeof organizations[0]?.id === 'string') {
+    return organizations[0].id;
+  }
+
+  return null;
+}
+
+function extractOpenAIResponseText(data) {
+  if (!data) return null;
+
+  if (typeof data.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  if (Array.isArray(data.output)) {
+    const texts = [];
+    for (const item of data.output) {
+      if (!item || typeof item !== 'object' || !Array.isArray(item.content)) continue;
+      for (const content of item.content) {
+        if (typeof content?.text === 'string' && content.text.trim()) {
+          texts.push(content.text.trim());
+        }
+      }
+    }
+
+    if (texts.length > 0) {
+      return texts.join(' ').trim();
+    }
+  }
+
+  if (typeof data === 'string') {
+    const trimmed = data.trim();
+    if (trimmed.includes('data:')) {
+      const deltas = [];
+      for (const line of trimmed.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+
+        try {
+          const parsed = JSON.parse(payload);
+
+          if (typeof parsed?.delta === 'string' && parsed.delta) {
+            deltas.push(parsed.delta);
+          }
+
+          if (typeof parsed?.output_text === 'string' && parsed.output_text) {
+            deltas.push(parsed.output_text);
+          }
+
+          if (Array.isArray(parsed?.output)) {
+            for (const item of parsed.output) {
+              if (!item || typeof item !== 'object' || !Array.isArray(item.content)) continue;
+              for (const content of item.content) {
+                if (typeof content?.text === 'string' && content.text.trim()) {
+                  deltas.push(content.text.trim());
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      if (deltas.length > 0) {
+        return deltas.join('').trim() || null;
+      }
+    }
+
+    return trimmed || null;
+  }
+
+  return null;
+}
+
 function resetTimeIsoFromSeconds(resetAtSeconds) {
   if (!resetAtSeconds) return null;
   let seconds = resetAtSeconds;
@@ -850,6 +1131,32 @@ async function refreshGoogleToken(refreshToken) {
       10000
     );
     return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshOpenAIToken(refreshToken, requestJson = httpsRequest) {
+  if (!refreshToken) return null;
+
+  const postData = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: OPENAI_OAUTH_CLIENT_ID,
+  }).toString();
+
+  try {
+    return await requestJson(
+      `${OPENAI_AUTH_ISSUER}/oauth/token`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: postData,
+      },
+      10000,
+    );
   } catch {
     return null;
   }
