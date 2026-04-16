@@ -6,6 +6,7 @@ INSTALL_DIR="$HOME/.oauth-preset-manager"
 STATE_DIR="$HOME/.config/oauth-preset-manager"
 STATE_FILE="$STATE_DIR/install-launcher-path"
 NODE_VERSION_MIN=18
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "🚀 OPM (OAuth Preset Manager) - Node.js Edition Installer"
 echo ""
@@ -69,13 +70,14 @@ find_launcher_dir() {
 
 install_launcher() {
     local launcher_dir="$1"
+    local install_root="$2"
     local launcher_path="$launcher_dir/opm"
 
     mkdir -p "$launcher_dir"
     mkdir -p "$STATE_DIR"
     cat > "$launcher_path" <<EOF
 #!/bin/sh
-exec node "$INSTALL_DIR/src/cli.js" "\$@"
+exec node "$install_root/src/cli.js" "\$@"
 EOF
     chmod +x "$launcher_path"
     printf '%s\n' "$launcher_dir" > "$STATE_FILE"
@@ -92,10 +94,13 @@ EOF
 }
 
 install_local() {
-    if [ -f "package.json" ] && [ -d "src" ]; then
+    if [ -f "$SCRIPT_DIR/package.json" ] && [ -d "$SCRIPT_DIR/src" ]; then
         echo "📦 Installing from local directory..."
-        npm install
-        install_launcher "$(find_launcher_dir)"
+        (
+            cd "$SCRIPT_DIR"
+            npm install
+        )
+        install_launcher "$(find_launcher_dir)" "$SCRIPT_DIR"
         return 0
     fi
     return 1
@@ -126,7 +131,7 @@ install_from_git() {
     echo "📦 Installing dependencies..."
     npm install
 
-    install_launcher "$(find_launcher_dir)"
+    install_launcher "$(find_launcher_dir)" "$INSTALL_DIR"
 }
 
 main() {
