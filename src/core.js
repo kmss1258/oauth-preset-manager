@@ -15,6 +15,10 @@ const GOOGLE_TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
 const OPENAI_KICKOFF_MODEL = 'gpt-5.4-mini';
 const OPENAI_KICKOFF_INPUT = 'Reply with exactly OK.';
 
+function normalizePlanType(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+}
+
 const GOOGLE_MODEL_KEYS = {
   'gemini-3-pro-high': 'G3Pro',
   'gemini-3-pro-low': 'G3Pro',
@@ -473,6 +477,8 @@ export class PresetManager {
       const entry = this._extractOpenAIOAuth(authData);
       if (!entry || !entry.access) continue;
 
+      const identity = this._extractOpenAIIdentity(entry.access, entry.account_id);
+      const planType = normalizePlanType(identity.plan_type);
       const existing = tokenMap.get(entry.access);
       if (existing) {
         existing.presets.push(formatPresetLabel(presetName));
@@ -484,7 +490,8 @@ export class PresetManager {
         tokenMap.set(entry.access, {
           access: entry.access,
           expires: entry.expires,
-          account_id: entry.account_id,
+          account_id: identity.account_id || entry.account_id,
+          plan_type: planType,
           presets: [formatPresetLabel(presetName)],
           preset_names: [presetName],
           nickname: presetName,
@@ -501,7 +508,7 @@ export class PresetManager {
 
     for (const item of tokenMap.values()) {
       promises.push(
-        this._fetchOpenAIQuotaForToken(item.access, item.expires, item.account_id)
+        this._fetchOpenAIQuotaForToken(item.access, item.expires, item.account_id, 10, item.plan_type)
           .then(result => {
             result.presets = item.presets.sort();
             result.preset_names = item.preset_names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
@@ -533,9 +540,10 @@ export class PresetManager {
       const authData = JSON.parse(await fs.readFile(authPath, 'utf-8'));
       const openaiEntry = this._extractOpenAIOAuth(authData);
       if (openaiEntry && openaiEntry.access) {
+        const identity = this._extractOpenAIIdentity(openaiEntry.access, openaiEntry.account_id);
         tasks.push({
           func: this._fetchOpenAIQuotaForToken.bind(this),
-          args: [openaiEntry.access, openaiEntry.expires, openaiEntry.account_id],
+          args: [openaiEntry.access, openaiEntry.expires, identity.account_id || openaiEntry.account_id, 10, identity.plan_type],
           presets: [activeLabel],
           accId: null,
         });
@@ -681,7 +689,7 @@ export class PresetManager {
       account_id: accountId || this._openaiAccountIdFromJWT(accessToken),
       user_id: typeof authSection?.chatgpt_user_id === 'string' ? authSection.chatgpt_user_id : null,
       email: typeof profile?.email === 'string' ? profile.email : null,
-      plan_type: typeof authSection?.chatgpt_plan_type === 'string' ? authSection.chatgpt_plan_type : null,
+      plan_type: normalizePlanType(authSection?.chatgpt_plan_type),
     };
   }
 
@@ -857,7 +865,8 @@ export class PresetManager {
     };
   }
 
-  async _fetchOpenAIQuotaForToken(accessToken, expires, accountId, timeoutSeconds = 10) {
+  async _fetchOpenAIQuotaForToken(accessToken, expires, accountId, timeoutSeconds = 10, authPlanType = null) {
+    const fallbackPlanType = normalizePlanType(authPlanType);
     const nowMs = Date.now();
     if (typeof expires === 'number' && expires < nowMs) {
       return {
@@ -865,6 +874,8 @@ export class PresetManager {
         account_id: accountId,
         daily: null,
         weekly: null,
+        plan_type: fallbackPlanType,
+        plan_type_source: fallbackPlanType ? 'auth' : null,
         error: 'Token expired',
       };
     }
@@ -879,8 +890,9 @@ export class PresetManager {
     }
 
     try {
-      const data = await httpsRequest(OPENAI_USAGE_URL, { headers, method: 'GET' }, timeoutSeconds * 1000);
+      const data = await this._requestJson(OPENAI_USAGE_URL, { headers, method: 'GET' }, timeoutSeconds * 1000);
       
+      const livePlanType = normalizePlanType(data.plan_type);
       const rateLimit = data.rate_limit || {};
       const primary = rateLimit.primary_window;
       const secondary = rateLimit.secondary_window;
@@ -906,6 +918,8 @@ export class PresetManager {
         account_id: resolvedAccountId,
         daily,
         weekly,
+        plan_type: livePlanType || fallbackPlanType,
+        plan_type_source: livePlanType ? 'usage' : (fallbackPlanType ? 'auth' : null),
         error: null,
       };
     } catch (exc) {
@@ -914,6 +928,8 @@ export class PresetManager {
         account_id: resolvedAccountId,
         daily: null,
         weekly: null,
+        plan_type: fallbackPlanType,
+        plan_type_source: fallbackPlanType ? 'auth' : null,
         error: `OpenAI API error: ${exc.message}`,
       };
     }
