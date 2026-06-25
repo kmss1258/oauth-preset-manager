@@ -267,14 +267,68 @@ function enableEscToExit() {
   });
 }
 
-function formatPercent(value) {
+const PRO_PLAN_TYPES = new Set(['pro', 'prolite']);
+const PRO_GRADIENT_STOPS = [
+  { r: 56, g: 189, b: 248 },
+  { r: 45, g: 212, b: 191 },
+  { r: 139, g: 92, b: 246 },
+];
+
+function normalizePlanType(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+}
+
+export function isRainbowQuotaEligible(result) {
+  return result?.provider === 'openai'
+    && !result.error
+    && result.plan_type_source === 'usage'
+    && PRO_PLAN_TYPES.has(normalizePlanType(result.plan_type));
+}
+
+function blendColor(start, end, ratio) {
+  return {
+    r: Math.round(start.r + (end.r - start.r) * ratio),
+    g: Math.round(start.g + (end.g - start.g) * ratio),
+    b: Math.round(start.b + (end.b - start.b) * ratio),
+  };
+}
+
+function gradientColorAt(index, total) {
+  if (total <= 1) return PRO_GRADIENT_STOPS[0];
+
+  const scaled = index / (total - 1) * (PRO_GRADIENT_STOPS.length - 1);
+  const stopIndex = Math.min(PRO_GRADIENT_STOPS.length - 2, Math.floor(scaled));
+  return blendColor(
+    PRO_GRADIENT_STOPS[stopIndex],
+    PRO_GRADIENT_STOPS[stopIndex + 1],
+    scaled - stopIndex,
+  );
+}
+
+function proGradientBar(text) {
+  return Array.from(text).map((char, index, chars) => {
+    const { r, g, b } = gradientColorAt(index, chars.length);
+    return `\x1b[38;2;${r};${g};${b}m${char}\x1b[39m`;
+  }).join('');
+}
+
+function shouldRenderProGradient(value) {
+  if (value === 'force') return true;
+  if (!value || process.env.NO_COLOR || process.env.CI) return false;
+  return Boolean(process.stdout.isTTY);
+}
+
+export function formatPercent(value, options = {}) {
   if (value == null) return chalk.gray('-');
 
   const width = 10;
   const filledLen = Math.max(0, Math.min(width, Math.round(value / 100 * width)));
   const emptyLen = width - filledLen;
+  const filled = '█'.repeat(filledLen);
 
-  const barFilled = chalk.green('█'.repeat(filledLen));
+  const barFilled = shouldRenderProGradient(options.rainbow) && filled
+    ? proGradientBar(filled)
+    : chalk.green(filled);
   const barEmpty = chalk.gray('░'.repeat(emptyLen));
 
   let color = chalk.green;
@@ -625,8 +679,9 @@ function renderQuotaTable(results) {
         accountDisplay,
       ];
     } else {
-      const dailyData = formatPercent(daily.percent_remaining);
-      const weeklyData = formatPercent(weekly?.percent_remaining);
+      const rainbow = isRainbowQuotaEligible(result);
+      const dailyData = formatPercent(daily.percent_remaining, { rainbow });
+      const weeklyData = formatPercent(weekly?.percent_remaining, { rainbow });
       
       row = [
         provider,
@@ -1011,8 +1066,9 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
         accountDisplay,
       ];
     } else {
-      const dailyData = formatPercent(daily.percent_remaining);
-      const weeklyData = formatPercent(weekly?.percent_remaining);
+      const rainbow = isRainbowQuotaEligible(result);
+      const dailyData = formatPercent(daily.percent_remaining, { rainbow });
+      const weeklyData = formatPercent(weekly?.percent_remaining, { rainbow });
       const weeklyDisplay = result.provider === 'openai'
         ? weeklyData
         : chalk.gray('-');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, normalizeQuotaActionKey, normalizeQuotaResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatPercent, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -92,4 +92,65 @@ test('preset quota summary marks stale cached data after an error', () => {
   });
   assert.match(summary.text, /D42%/);
   assert.match(summary.text, /W77%/);
+});
+
+
+const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+function stripAnsi(value) {
+  return value.replace(ANSI_PATTERN, '');
+}
+
+test('rainbow quota eligibility requires live usable OpenAI Pro usage', () => {
+  assert.equal(isRainbowQuotaEligible({
+    provider: 'openai',
+    plan_type: 'pro',
+    plan_type_source: 'usage',
+    error: null,
+  }), true);
+
+  assert.equal(isRainbowQuotaEligible({
+    provider: 'openai',
+    plan_type: 'prolite',
+    plan_type_source: 'usage',
+    error: null,
+  }), true);
+
+  assert.equal(isRainbowQuotaEligible({
+    provider: 'openai',
+    plan_type: 'pro',
+    plan_type_source: 'auth',
+    error: null,
+  }), false);
+
+  assert.equal(isRainbowQuotaEligible({
+    provider: 'openai',
+    plan_type: 'pro',
+    plan_type_source: 'usage',
+    error: 'Token expired',
+  }), false);
+
+  assert.equal(isRainbowQuotaEligible({
+    provider: 'openai',
+    plan_type: 'plus',
+    plan_type_source: 'usage',
+    error: null,
+  }), false);
+});
+
+test('Pro gradient quota bar preserves visible width and percent text', () => {
+  const plain = formatPercent(60);
+  const rainbow = formatPercent(60, { rainbow: 'force' });
+
+  assert.ok(rainbow.includes(`${String.fromCharCode(27)}[38;2;`));
+  assert.equal(rainbow.includes(`${String.fromCharCode(27)}[38;5;196m`), false);
+  assert.equal(stripAnsi(rainbow), stripAnsi(plain));
+});
+
+
+test('Pro gradient quota bar stays plain in non-TTY captures', () => {
+  const plain = formatPercent(60);
+  const captured = formatPercent(60, { rainbow: true });
+
+  assert.equal(captured, plain);
 });
