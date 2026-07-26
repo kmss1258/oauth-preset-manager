@@ -119,6 +119,12 @@ test('collectAllQuota refreshes expired OpenAI presets in parallel and persists 
     assert.equal(results.length, 2);
     assert.ok(results.every(result => result.error === null));
 
+    assert.deepEqual(manager.lastOpenAIRefreshResults, [
+      { preset_name: 'alpha', is_active: false, success: true, error: null },
+      { preset_name: 'alpha-copy', is_active: false, success: true, error: null },
+      { preset_name: 'beta', is_active: false, success: true, error: null },
+    ]);
+
     const alpha = JSON.parse(await readFile(join(manager.presetsDir, 'alpha.json'), 'utf-8'));
     const alphaCopy = JSON.parse(await readFile(join(manager.presetsDir, 'alpha-copy.json'), 'utf-8'));
     const beta = JSON.parse(await readFile(join(manager.presetsDir, 'beta.json'), 'utf-8'));
@@ -131,6 +137,70 @@ test('collectAllQuota refreshes expired OpenAI presets in parallel and persists 
     assert.equal(alphaCopy.codex.refresh, 'rotated-refresh-a');
     assert.equal(beta.openai.access, 'access-refresh-b');
     assert.equal(beta.openai.refresh, 'rotated-refresh-b');
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('collectAllQuota reports preset refresh failures without overwriting credentials', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-openai-refresh-errors-'));
+
+  try {
+    const manager = new PresetManager(configDir);
+    await manager.init();
+    manager.getAuthPath = () => join(configDir, 'missing-auth.json');
+    manager.collectActiveQuota = async () => [];
+
+    const expired = Date.now() - 1_000;
+    const originalCredentials = {
+      missing: {
+        type: 'oauth',
+        access: 'expired-missing',
+        expires: expired,
+      },
+      rejected: {
+        type: 'oauth',
+        access: 'expired-rejected',
+        refresh: 'refresh-rejected',
+        expires: expired,
+      },
+    };
+
+    await writeFile(join(manager.presetsDir, 'missing.json'), JSON.stringify({
+      openai: originalCredentials.missing,
+    }, null, 2));
+    await writeFile(join(manager.presetsDir, 'rejected.json'), JSON.stringify({
+      openai: originalCredentials.rejected,
+    }, null, 2));
+
+    manager._requestJson = async (url) => {
+      if (url.endsWith('/oauth/token')) {
+        throw new Error('HTTP 400: {"error":"invalid_grant"}');
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+
+    await manager.collectAllQuota();
+
+    assert.deepEqual(manager.lastOpenAIRefreshResults, [
+      {
+        preset_name: 'missing',
+        is_active: false,
+        success: false,
+        error: 'No refresh token is available',
+      },
+      {
+        preset_name: 'rejected',
+        is_active: false,
+        success: false,
+        error: 'HTTP 400: {"error":"invalid_grant"}',
+      },
+    ]);
+
+    const missing = JSON.parse(await readFile(join(manager.presetsDir, 'missing.json'), 'utf-8'));
+    const rejected = JSON.parse(await readFile(join(manager.presetsDir, 'rejected.json'), 'utf-8'));
+    assert.deepEqual(missing.openai, originalCredentials.missing);
+    assert.deepEqual(rejected.openai, originalCredentials.rejected);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }

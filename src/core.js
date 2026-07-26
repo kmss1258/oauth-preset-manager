@@ -68,6 +68,7 @@ export class PresetManager {
     this.quotaCacheFile = join(this.configDir, 'quota-cache.json');
     this.config = null;
     this.quotaCache = this._createEmptyQuotaCache();
+    this.lastOpenAIRefreshResults = [];
     this._requestJson = httpsRequest;
   }
 
@@ -475,43 +476,64 @@ export class PresetManager {
 
   async _refreshExpiredOpenAICredentials() {
     const presetFiles = await fs.readdir(this.presetsDir).catch(() => []);
-    const paths = [
-      this.getAuthPath(),
+    const targets = [
+      { path: this.getAuthPath(), preset_name: 'Current Active', is_active: true },
       ...presetFiles
         .filter(file => file.endsWith('.json'))
-        .map(file => join(this.presetsDir, file)),
+        .map(file => ({
+          path: join(this.presetsDir, file),
+          preset_name: file.slice(0, -5),
+          is_active: false,
+        })),
     ];
 
-    const records = (await Promise.all(paths.map(async path => {
+    const records = (await Promise.all(targets.map(async target => {
       try {
-        const data = JSON.parse(await fs.readFile(path, 'utf-8'));
+        const data = JSON.parse(await fs.readFile(target.path, 'utf-8'));
         const service = data.codex ? 'codex' : data.openai ? 'openai' : null;
         const entry = service ? data[service] : null;
         if (
           !entry
           || entry.type !== 'oauth'
-          || typeof entry.refresh !== 'string'
-          || !entry.refresh
           || typeof entry.expires !== 'number'
           || entry.expires > Date.now()
         ) {
           return null;
         }
-        return { path, data, service, entry };
+        return { ...target, data, service, entry };
       } catch {
         return null;
       }
     }))).filter(Boolean);
 
+    const makeResult = (record, success, error = null) => ({
+      preset_name: record.preset_name,
+      is_active: record.is_active,
+      success,
+      error,
+    });
+    const results = [];
     const groups = new Map();
+
     for (const record of records) {
+      if (typeof record.entry.refresh !== 'string' || !record.entry.refresh) {
+        results.push(makeResult(record, false, 'No refresh token is available'));
+        continue;
+      }
+
       const group = groups.get(record.entry.refresh) || [];
       group.push(record);
       groups.set(record.entry.refresh, group);
     }
 
-    const refreshed = await Promise.all(Array.from(groups.entries()).map(async ([refresh, group]) => {
-      const tokens = await refreshOpenAIToken(refresh, this._requestJson);
+    const groupResults = await Promise.all(Array.from(groups.entries()).map(async ([refresh, group]) => {
+      let tokens;
+      try {
+        tokens = await refreshOpenAIToken(refresh, this._requestJson);
+      } catch (error) {
+        return group.map(record => makeResult(record, false, error.message));
+      }
+
       const access = tokens?.access_token;
       const expiresIn = Number(tokens?.expires_in);
       const jwtExpires = Number(parseJWTPayload(access || '')?.exp);
@@ -522,12 +544,12 @@ export class PresetManager {
           : null;
 
       if (!access || !expires) {
-        return false;
+        return group.map(record => makeResult(record, false, 'OAuth response did not include a usable access token'));
       }
 
       const accountId = extractAccountIdFromTokenSet(tokens);
-      try {
-        await Promise.all(group.map(async record => {
+      return Promise.all(group.map(async record => {
+        try {
           record.data[record.service] = {
             ...record.entry,
             access,
@@ -536,14 +558,18 @@ export class PresetManager {
             ...(accountId ? { accountId } : {}),
           };
           await this._writeJsonAtomic(record.path, record.data);
-        }));
-        return true;
-      } catch {
-        return false;
-      }
+          return makeResult(record, true);
+        } catch (error) {
+          return makeResult(record, false, `Failed to save refreshed token: ${error.message}`);
+        }
+      }));
     }));
 
-    return refreshed.filter(Boolean).length;
+    results.push(...groupResults.flat());
+    return results.sort((a, b) => {
+      if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+      return a.preset_name.localeCompare(b.preset_name, undefined, { sensitivity: 'base' });
+    });
   }
 
   async collectOpenAIQuota() {
@@ -680,7 +706,7 @@ export class PresetManager {
   }
 
   async collectAllQuota() {
-    await this._refreshExpiredOpenAICredentials();
+    this.lastOpenAIRefreshResults = await this._refreshExpiredOpenAICredentials();
 
     const [active, openai] = await Promise.all([
       this.collectActiveQuota(),
@@ -1349,21 +1375,17 @@ async function refreshOpenAIToken(refreshToken, requestJson = httpsRequest) {
     client_id: OPENAI_OAUTH_CLIENT_ID,
   }).toString();
 
-  try {
-    return await requestJson(
-      `${OPENAI_AUTH_ISSUER}/oauth/token`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: postData,
+  return requestJson(
+    `${OPENAI_AUTH_ISSUER}/oauth/token`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-      10000,
-    );
-  } catch {
-    return null;
-  }
+      body: postData,
+    },
+    10000,
+  );
 }
 
 async function getAntigravityAccountsPath() {
