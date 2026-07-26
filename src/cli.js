@@ -444,6 +444,37 @@ export function normalizeQuotaResults(results) {
   return sortResultsByPresetName(deduplicateResults(results));
 }
 
+export function summarizeOpenAIRefreshResults(results) {
+  if (!Array.isArray(results) || results.length === 0) return null;
+  const succeeded = results.filter(result => result.success).length;
+  return {
+    total: results.length,
+    succeeded,
+    failed: results.length - succeeded,
+  };
+}
+
+function renderOpenAIRefreshResults(results) {
+  const summary = summarizeOpenAIRefreshResults(results);
+  if (!summary) return;
+
+  console.log(chalk.bold.cyan(`  🔐 ${t('openai_refresh_title')}`));
+  console.log(`  ${chalk.green(`${t('openai_refresh_success')}: ${summary.succeeded}`)}  ${chalk.red(`${t('openai_refresh_failed')}: ${summary.failed}`)}`);
+  console.log();
+
+  for (const result of results) {
+    const name = result.preset_name || '-';
+    if (result.success) {
+      console.log(`  ${chalk.green('✓')} ${chalk.yellow(name)}: ${t('openai_refresh_updated')}`);
+      continue;
+    }
+
+    const error = truncateText(result.error || t('openai_refresh_unknown_error'), 100);
+    console.log(`  ${chalk.red('✗')} ${chalk.yellow(name)}: ${t('openai_refresh_failed')} — ${chalk.red(error)}`);
+  }
+  console.log();
+}
+
 function formatAccountLabel(result) {
   const accountId = result?.account_id || '';
   const nickname = result?.nickname;
@@ -1133,6 +1164,8 @@ async function cmdQuota(manager) {
     while (true) {
       console.clear();
       printHeader();
+
+      renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
 
       const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
       

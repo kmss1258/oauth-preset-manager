@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatPercent, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatPercent, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -153,4 +153,17 @@ test('Pro gradient quota bar stays plain in non-TTY captures', () => {
   const captured = formatPercent(60, { rainbow: true });
 
   assert.equal(captured, plain);
+});
+
+test('OpenAI refresh summary counts successes and failures', () => {
+  assert.deepEqual(summarizeOpenAIRefreshResults([
+    { success: true },
+    { success: false },
+    { success: true },
+  ]), {
+    total: 3,
+    succeeded: 2,
+    failed: 1,
+  });
+  assert.equal(summarizeOpenAIRefreshResults([]), null);
 });
