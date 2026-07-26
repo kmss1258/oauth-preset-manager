@@ -68,6 +68,11 @@ const TRANSLATIONS = {
     openai_kickoff_targets: '대상',
     openai_kickoff_success: '성공',
     openai_kickoff_failed: '실패',
+    openai_refresh_title: 'OpenAI OAuth 토큰 갱신',
+    openai_refresh_success: '성공',
+    openai_refresh_failed: '실패',
+    openai_refresh_updated: '갱신됨',
+    openai_refresh_unknown_error: '알 수 없는 오류',
   },
   en: {
     current_preset: 'Current Preset',
@@ -136,6 +141,11 @@ const TRANSLATIONS = {
     openai_kickoff_targets: 'Targets',
     openai_kickoff_success: 'Succeeded',
     openai_kickoff_failed: 'Failed',
+    openai_refresh_title: 'OpenAI OAuth Token Refresh',
+    openai_refresh_success: 'Succeeded',
+    openai_refresh_failed: 'Failed',
+    openai_refresh_updated: 'Updated',
+    openai_refresh_unknown_error: 'Unknown error',
   },
 };
 
