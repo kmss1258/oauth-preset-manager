@@ -462,6 +462,90 @@ export class PresetManager {
     return results;
   }
 
+  async _writeJsonAtomic(path, data) {
+    const tmpPath = `${path}.${process.pid}.tmp`;
+    try {
+      await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+      await fs.rename(tmpPath, path);
+    } catch (error) {
+      await fs.unlink(tmpPath).catch(() => {});
+      throw error;
+    }
+  }
+
+  async _refreshExpiredOpenAICredentials() {
+    const presetFiles = await fs.readdir(this.presetsDir).catch(() => []);
+    const paths = [
+      this.getAuthPath(),
+      ...presetFiles
+        .filter(file => file.endsWith('.json'))
+        .map(file => join(this.presetsDir, file)),
+    ];
+
+    const records = (await Promise.all(paths.map(async path => {
+      try {
+        const data = JSON.parse(await fs.readFile(path, 'utf-8'));
+        const service = data.codex ? 'codex' : data.openai ? 'openai' : null;
+        const entry = service ? data[service] : null;
+        if (
+          !entry
+          || entry.type !== 'oauth'
+          || typeof entry.refresh !== 'string'
+          || !entry.refresh
+          || typeof entry.expires !== 'number'
+          || entry.expires > Date.now()
+        ) {
+          return null;
+        }
+        return { path, data, service, entry };
+      } catch {
+        return null;
+      }
+    }))).filter(Boolean);
+
+    const groups = new Map();
+    for (const record of records) {
+      const group = groups.get(record.entry.refresh) || [];
+      group.push(record);
+      groups.set(record.entry.refresh, group);
+    }
+
+    const refreshed = await Promise.all(Array.from(groups.entries()).map(async ([refresh, group]) => {
+      const tokens = await refreshOpenAIToken(refresh, this._requestJson);
+      const access = tokens?.access_token;
+      const expiresIn = Number(tokens?.expires_in);
+      const jwtExpires = Number(parseJWTPayload(access || '')?.exp);
+      const expires = Number.isFinite(expiresIn) && expiresIn > 0
+        ? Date.now() + expiresIn * 1000
+        : Number.isFinite(jwtExpires) && jwtExpires > 0
+          ? jwtExpires * 1000
+          : null;
+
+      if (!access || !expires) {
+        return false;
+      }
+
+      const accountId = extractAccountIdFromTokenSet(tokens);
+      try {
+        await Promise.all(group.map(async record => {
+          record.data[record.service] = {
+            ...record.entry,
+            access,
+            refresh: tokens.refresh_token || refresh,
+            expires,
+            ...(accountId ? { accountId } : {}),
+          };
+          await this._writeJsonAtomic(record.path, record.data);
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+
+    return refreshed.filter(Boolean).length;
+  }
+
   async collectOpenAIQuota() {
     const tokenMap = new Map();
 
@@ -596,6 +680,8 @@ export class PresetManager {
   }
 
   async collectAllQuota() {
+    await this._refreshExpiredOpenAICredentials();
+
     const [active, openai] = await Promise.all([
       this.collectActiveQuota(),
       this.collectOpenAIQuota(),
