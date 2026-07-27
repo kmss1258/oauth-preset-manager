@@ -126,6 +126,23 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 - `OPM_LANG`: 언어 설정 (`ko` 또는 `en`)
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Google/Antigravity 할당량 갱신에 필요
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Google/Antigravity 할당량 갱신에 필요
+- `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go quota 조회용 workspace ID (`wrk_...`)
+- `OPENCODE_GO_AUTH_COOKIE`: OpenCode Go quota 조회용 `opencode.ai`의 `auth` 쿠키
+
+OpenCode Go API key는 모델 사용을 활성화합니다. `opm q`에서 5시간·주간·월간 사용량을 가져오려면 현재 OpenCode Go workspace 페이지가 브라우저 `auth` 쿠키도 요구하므로 위 두 환경 변수를 함께 설정해야 합니다.
+
+환경 변수 대신 `~/.config/oauth-preset-manager/opencode-go.json`에 두 값을 저장할 수도 있으며, 환경 변수가 있으면 그것이 우선합니다. 이 파일은 비공개로 유지하세요.
+
+```json
+{
+  "workspaceId": "wrk_...",
+  "authCookie": "Fe26.2**..."
+}
+```
+
+```bash
+chmod 600 ~/.config/oauth-preset-manager/opencode-go.json
+```
 
 ## 📁 데이터 저장 위치
 

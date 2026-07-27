@@ -100,6 +100,23 @@ OpenCode uses XDG-style paths on both Linux and macOS, and honors `XDG_DATA_HOME
 - `OPM_LANG`: Set language (`ko` or `en`)
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Required for Google/Antigravity quota refresh
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Required for Google/Antigravity quota refresh
+- `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go workspace ID (`wrk_...`) for `opm q` usage data
+- `OPENCODE_GO_AUTH_COOKIE`: `auth` cookie from `opencode.ai` for OpenCode Go usage data
+
+OpenCode Go usage is read from its workspace page and shows the 5-hour, weekly, and monthly windows. Its API key enables Go models, but the usage page currently requires the browser `auth` cookie as well.
+
+You may store those two values in `~/.config/oauth-preset-manager/opencode-go.json` instead; environment variables take precedence. Keep this file private:
+
+```json
+{
+  "workspaceId": "wrk_...",
+  "authCookie": "Fe26.2**..."
+}
+```
+
+```bash
+chmod 600 ~/.config/oauth-preset-manager/opencode-go.json
+```
 
 ## 📝 Project Structure
 
