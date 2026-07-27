@@ -318,6 +318,12 @@ function shouldRenderProGradient(value) {
   return Boolean(process.stdout.isTTY);
 }
 
+const OPENCODE_GO_PERCENT_OPTIONS = { fillColor: chalk.cyan };
+
+function formatOpenCodeGoPercent(value) {
+  return formatPercent(value, OPENCODE_GO_PERCENT_OPTIONS);
+}
+
 export function formatPercent(value, options = {}) {
   if (value == null) return chalk.gray('-');
 
@@ -328,7 +334,7 @@ export function formatPercent(value, options = {}) {
 
   const barFilled = shouldRenderProGradient(options.rainbow) && filled
     ? proGradientBar(filled)
-    : chalk.green(filled);
+    : (options.fillColor || chalk.green)(filled);
   const barEmpty = chalk.gray('░'.repeat(emptyLen));
 
   let color = chalk.green;
@@ -490,9 +496,9 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
   const accountId = result?.account_id || '-';
   const lines = [chalk.yellow(accountId)];
   if (options.includeWeekly) {
-    lines.push(`${chalk.dim('W ')}${formatPercent(result?.weekly?.percent_remaining)} ${chalk.dim('·')} ${formatReset(result?.weekly?.reset_time_iso)}`);
+    lines.push(`${chalk.dim('W ')}${formatOpenCodeGoPercent(result?.weekly?.percent_remaining)} ${chalk.dim('·')} ${formatReset(result?.weekly?.reset_time_iso)}`);
   }
-  lines.push(`${chalk.dim('M ')}${formatPercent(result?.monthly_percent)} ${chalk.dim('·')} ${formatReset(result?.monthly_reset_iso)}`);
+  lines.push(`${chalk.dim('M ')}${formatOpenCodeGoPercent(result?.monthly_percent)} ${chalk.dim('·')} ${formatReset(result?.monthly_reset_iso)}`);
   return lines.join('\n');
 }
 
@@ -740,8 +746,9 @@ function renderQuotaTable(results) {
       ];
     } else {
       const rainbow = isRainbowQuotaEligible(result);
-      const dailyData = formatPercent(daily.percent_remaining, { rainbow });
-      const weeklyData = formatPercent(weekly?.percent_remaining, { rainbow });
+      const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS : { rainbow };
+      const dailyData = formatPercent(daily.percent_remaining, percentOptions);
+      const weeklyData = formatPercent(weekly?.percent_remaining, percentOptions);
       
       row = [
         provider,
@@ -1132,8 +1139,9 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
       ];
     } else {
       const rainbow = isRainbowQuotaEligible(result);
-      const dailyData = formatPercent(daily.percent_remaining, { rainbow });
-      const weeklyData = formatPercent(weekly?.percent_remaining, { rainbow });
+      const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS : { rainbow };
+      const dailyData = formatPercent(daily.percent_remaining, percentOptions);
+      const weeklyData = formatPercent(weekly?.percent_remaining, percentOptions);
       const weeklyDisplay = result.provider !== 'google'
         ? weeklyData
         : chalk.gray('-');

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import chalk from 'chalk';
 
 import { buildInteractiveChoices, buildPresetQuotaSummary, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
@@ -184,6 +185,32 @@ test('OpenCode Go narrow account cell includes weekly and monthly quota summarie
   assert.match(cell, /82%/);
   assert.match(cell, /\nM /);
   assert.match(cell, /64%/);
+});
+
+test('OpenCode Go quota bars use cyan fill while warning percents stay red and yellow', () => {
+  const previousLevel = chalk.level;
+  chalk.level = 1;
+
+  try {
+    const cell = formatOpenCodeGoAccountCell({
+      provider: 'opencodego',
+      account_id: 'wrk_123',
+      weekly: {
+        percent_remaining: 42,
+        reset_time_iso: '2026-07-28T00:00:00.000Z',
+      },
+      monthly_percent: 12,
+      monthly_reset_iso: '2026-08-01T00:00:00.000Z',
+    }, { includeWeekly: true });
+
+    assert.match(cell, /\x1b\[36m█+/);
+    assert.doesNotMatch(cell, /\x1b\[32m█+/);
+    assert.match(cell, /\x1b\[33m\s*42%/);
+    assert.match(cell, /\x1b\[31m\s*12%/);
+    assert.match(formatPercent(60), /\x1b\[32m█+/);
+  } finally {
+    chalk.level = previousLevel;
+  }
 });
 
 test('quota table toggle keeps OpenCode Go as a normal non-Google row', () => {
