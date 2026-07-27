@@ -66,6 +66,7 @@ export class PresetManager {
     this.backupsDir = join(this.configDir, 'backups');
     this.configFile = join(this.configDir, 'config.json');
     this.quotaCacheFile = join(this.configDir, 'quota-cache.json');
+    this.openCodeGoConfigFile = join(this.configDir, 'opencode-go.json');
     this.config = null;
     this.quotaCache = this._createEmptyQuotaCache();
     this.lastOpenAIRefreshResults = [];
@@ -708,11 +709,85 @@ export class PresetManager {
   async collectAllQuota() {
     this.lastOpenAIRefreshResults = await this._refreshExpiredOpenAICredentials();
 
-    const [active, openai] = await Promise.all([
+    const [active, openai, opencodego] = await Promise.all([
       this.collectActiveQuota(),
       this.collectOpenAIQuota(),
+      this.collectOpenCodeGoQuota(),
     ]);
-    return [...active, ...openai];
+    return [...active, ...openai, ...opencodego];
+  }
+
+  async _getOpenCodeGoCredentials() {
+    let config = {};
+    try {
+      const parsed = JSON.parse(await fs.readFile(this.openCodeGoConfigFile, 'utf-8'));
+      if (parsed && typeof parsed === 'object') config = parsed;
+    } catch {}
+
+    return {
+      workspaceId: env.OPENCODE_GO_WORKSPACE_ID?.trim() || (typeof config.workspaceId === 'string' ? config.workspaceId.trim() : ''),
+      authCookie: env.OPENCODE_GO_AUTH_COOKIE?.trim() || (typeof config.authCookie === 'string' ? config.authCookie.trim() : ''),
+    };
+  }
+
+  async collectOpenCodeGoQuota() {
+    const { workspaceId, authCookie } = await this._getOpenCodeGoCredentials();
+    if (!workspaceId || !authCookie) return [];
+
+    try {
+      const url = 'https://opencode.ai/workspace/' + encodeURIComponent(workspaceId) + '/go';
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Cookie': 'auth=' + authCookie,
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) return [];
+
+      const html = await response.text();
+      const patterns = [
+        ['rolling', /rollingUsage:\$R\[\d+\]=(\{[^}]+\})/],
+        ['weekly', /weeklyUsage:\$R\[\d+\]=(\{[^}]+\})/],
+        ['monthly', /monthlyUsage:\$R\[\d+\]=(\{[^}]+\})/],
+      ];
+
+      const usage = {};
+      for (const [key, re] of patterns) {
+        const match = html.match(re);
+        if (!match) continue;
+        try {
+          const jsonStr = match[1].replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3');
+          usage[key] = JSON.parse(jsonStr);
+        } catch {}
+      }
+
+      if (!usage.rolling && !usage.weekly && !usage.monthly) return [];
+
+      const daily = usage.rolling ? {
+        percent_remaining: Math.round(100 - usage.rolling.usagePercent),
+        reset_time_iso: usage.rolling.resetInSec ? new Date(Date.now() + usage.rolling.resetInSec * 1000).toISOString() : null,
+      } : null;
+
+      const weekly = usage.weekly ? {
+        percent_remaining: Math.round(100 - usage.weekly.usagePercent),
+        reset_time_iso: usage.weekly.resetInSec ? new Date(Date.now() + usage.weekly.resetInSec * 1000).toISOString() : null,
+      } : null;
+
+      return [{
+        provider: 'opencodego',
+        account_id: workspaceId,
+        daily,
+        weekly,
+        monthly_percent: usage.monthly ? Math.round(100 - usage.monthly.usagePercent) : null,
+        monthly_reset_iso: usage.monthly?.resetInSec ? new Date(Date.now() + usage.monthly.resetInSec * 1000).toISOString() : null,
+        error: null,
+      }];
+    } catch {
+      return [];
+    }
   }
 
   _extractPresetNameFromLabel(label) {
