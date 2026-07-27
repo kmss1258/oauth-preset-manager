@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatPercent, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -153,6 +153,47 @@ test('Pro gradient quota bar stays plain in non-TTY captures', () => {
   const captured = formatPercent(60, { rainbow: true });
 
   assert.equal(captured, plain);
+});
+
+test('OpenCode Go account cell includes monthly quota summary', () => {
+  const cell = stripAnsi(formatOpenCodeGoAccountCell({
+    provider: 'opencodego',
+    account_id: 'wrk_123',
+    monthly_percent: 64,
+    monthly_reset_iso: '2026-07-28T00:00:00.000Z',
+  }));
+
+  assert.match(cell, /^wrk_123\nM /);
+  assert.match(cell, /64%/);
+  assert.match(cell, /·/);
+});
+
+test('OpenCode Go narrow account cell includes weekly and monthly quota summaries', () => {
+  const cell = stripAnsi(formatOpenCodeGoAccountCell({
+    provider: 'opencodego',
+    account_id: 'wrk_123',
+    weekly: {
+      percent_remaining: 82,
+      reset_time_iso: '2026-07-28T00:00:00.000Z',
+    },
+    monthly_percent: 64,
+    monthly_reset_iso: '2026-08-01T00:00:00.000Z',
+  }, { includeWeekly: true }));
+
+  assert.match(cell, /^wrk_123\nW /);
+  assert.match(cell, /82%/);
+  assert.match(cell, /\nM /);
+  assert.match(cell, /64%/);
+});
+
+test('quota table toggle keeps OpenCode Go as a normal non-Google row', () => {
+  const rows = getQuotaTableRowItems([
+    { provider: 'openai', account_id: 'openai-1' },
+    { provider: 'google', account_id: 'google-1' },
+    { provider: 'opencodego', account_id: 'wrk_123' },
+  ], false);
+
+  assert.deepEqual(rows.map(row => row.provider), ['openai', 'opencodego']);
 });
 
 test('OpenAI refresh summary counts successes and failures', () => {
