@@ -509,16 +509,23 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
 }
 
 export function formatCommandCodeAccountCell(result) {
-  const credits = result?.command_code_credits;
+  return chalk.cyan(result?.nickname || result?.account_id || '-');
+}
+
+export function formatCommandCodeQuotaCell(result, window, detail = '') {
+  const value = formatPercent(window?.percent_remaining, { rainbow: false });
+  return detail ? `${value}\n${chalk.dim(detail)}` : value;
+}
+
+function getCommandCodeDailyDetail(result) {
+  const total = result?.command_code_credits?.total_remaining;
+  return total == null ? '' : `C ${total.toFixed(2)}`;
+}
+
+function getCommandCodeWeeklyDetail(result) {
   const usage = result?.command_code_usage;
-  const lines = [chalk.cyan(result?.nickname || result?.account_id || '-')];
-  const details = [];
-  if (credits) details.push(`C ${credits.total_remaining.toFixed(2)}`);
-  if (usage && (usage.total_count || usage.total_tokens || usage.total_cost)) {
-    details.push(`U ${usage.total_count}r/${usage.total_tokens}t/$${usage.total_cost.toFixed(2)}`);
-  }
-  lines.push(details.join(' · ') || '-');
-  return lines.join('\n');
+  if (!usage || !(usage.total_count || usage.total_tokens || usage.total_cost)) return '';
+  return `U ${usage.total_count}r/${usage.total_tokens}t/$${usage.total_cost.toFixed(2)}`;
 }
 
 function formatCommandCodeProvider(result) {
@@ -786,8 +793,12 @@ function renderQuotaTable(results) {
     } else {
       const rainbow = isRainbowQuotaEligible(result);
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS : { rainbow };
-      const dailyData = formatPercent(daily.percent_remaining, percentOptions);
-      const weeklyData = formatPercent(weekly?.percent_remaining, percentOptions);
+      const dailyData = result.provider === 'commandcode'
+        ? formatCommandCodeQuotaCell(result, daily, getCommandCodeDailyDetail(result))
+        : formatPercent(daily.percent_remaining, percentOptions);
+      const weeklyData = result.provider === 'commandcode'
+        ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
+        : formatPercent(weekly?.percent_remaining, percentOptions);
       
       row = [
         provider,
@@ -1212,8 +1223,12 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
     } else {
       const rainbow = isRainbowQuotaEligible(result);
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS : { rainbow };
-      const dailyData = formatPercent(daily.percent_remaining, percentOptions);
-      const weeklyData = formatPercent(weekly?.percent_remaining, percentOptions);
+       const dailyData = result.provider === 'commandcode'
+         ? formatCommandCodeQuotaCell(result, daily, getCommandCodeDailyDetail(result))
+         : formatPercent(daily.percent_remaining, percentOptions);
+       const weeklyData = result.provider === 'commandcode'
+         ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
+         : formatPercent(weekly?.percent_remaining, percentOptions);
       const weeklyDisplay = result.provider !== 'google'
         ? weeklyData
         : chalk.gray('-');
