@@ -27,6 +27,12 @@ opm
 
 OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `XDG_DATA_HOME` / `XDG_CONFIG_HOME`가 있으면 이를 따릅니다.
 
+일반적인 인증 파일 위치:
+- OpenCode: `~/.local/share/opencode/auth.json` 또는 `~/.config/opencode/auth.json`
+- Codex CLI: `~/.codex/auth.json`
+- Command Code: `~/.commandcode/auth.json` (OPM은 `~/.commandcode/oauth.json`도 확인합니다)
+- Claude Code: `~/.claude/.credentials.json`
+
 ---
 
 ## ✨ 주요 기능
@@ -128,6 +134,7 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Google/Antigravity 할당량 갱신에 필요
 - `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go quota 조회용 workspace ID (`wrk_...`)
 - `OPENCODE_GO_AUTH_COOKIE`: OpenCode Go quota 조회용 `opencode.ai`의 `auth` 쿠키
+- `OPM_COMMAND_CODE_AUTH_PATH`: Command Code 인증 파일 경로 재정의
 
 OpenCode Go API key는 모델 사용을 활성화합니다. `opm q`에서 5시간·주간·월간 사용량을 가져오려면 현재 OpenCode Go workspace 페이지가 브라우저 `auth` 쿠키도 요구하므로 위 두 환경 변수를 함께 설정해야 합니다.
 

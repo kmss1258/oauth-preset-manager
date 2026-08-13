@@ -96,12 +96,19 @@ Presets are stored in `~/.config/oauth-preset-manager/presets/`.
 The tool automatically detects your OpenCode `auth.json` location.
 OpenCode uses XDG-style paths on both Linux and macOS, and honors `XDG_DATA_HOME` / `XDG_CONFIG_HOME` if you set them.
 
+Common auth file locations:
+- OpenCode: `~/.local/share/opencode/auth.json` or `~/.config/opencode/auth.json`
+- Codex CLI: `~/.codex/auth.json`
+- Command Code: `~/.commandcode/auth.json` (OPM also checks `~/.commandcode/oauth.json`)
+- Claude Code: `~/.claude/.credentials.json`
+
 ### Environment Variables
 - `OPM_LANG`: Set language (`ko` or `en`)
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Required for Google/Antigravity quota refresh
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Required for Google/Antigravity quota refresh
 - `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go workspace ID (`wrk_...`) for `opm q` usage data
 - `OPENCODE_GO_AUTH_COOKIE`: `auth` cookie from `opencode.ai` for OpenCode Go usage data
+- `OPM_COMMAND_CODE_AUTH_PATH`: Optional Command Code credential path override
 
 OpenCode Go usage is read from its workspace page and shows the 5-hour, weekly, and monthly windows. Its API key enables Go models, but the usage page currently requires the browser `auth` cookie as well.
 
