@@ -533,12 +533,10 @@ function formatCommandCodeProvider() {
   return chalk.yellow('Command Code');
 }
 
-export function formatCommandCodeResetCell(result, window, includeRenewal = false) {
+export function formatCommandCodeResetCell(result, window) {
   const lines = [formatReset(window?.reset_time_iso)];
-  const periodEnd = includeRenewal ? result?.command_code_period?.end : null;
-  const totalCost = includeRenewal ? null : result?.command_code_usage?.total_cost;
-  if (periodEnd) lines.push(chalk.dim(`Renews ${formatReset(periodEnd)}`));
-  else if (totalCost != null) lines.push(chalk.dim(`$${totalCost.toFixed(2)} used`));
+  const totalCost = result?.command_code_usage?.total_cost;
+  if (totalCost != null) lines.push(chalk.dim(`$${totalCost.toFixed(2)} used`));
   return lines.join('\n');
 }
 
@@ -806,9 +804,7 @@ function renderQuotaTable(results) {
       const weeklyData = result.provider === 'commandcode'
         ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
         : formatPercent(weekly?.percent_remaining, percentOptions);
-      const dailyResetData = result.provider === 'commandcode'
-        ? formatCommandCodeResetCell(result, daily, true)
-        : formatReset(daily.reset_time_iso);
+      const dailyResetData = formatReset(daily.reset_time_iso);
       const weeklyResetData = result.provider === 'commandcode'
         ? formatCommandCodeResetCell(result, weekly)
         : formatReset(weekly?.reset_time_iso);
@@ -1242,9 +1238,7 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
        const weeklyData = result.provider === 'commandcode'
          ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
          : formatPercent(weekly?.percent_remaining, percentOptions);
-      const dailyResetData = result.provider === 'commandcode'
-        ? formatCommandCodeResetCell(result, daily, true)
-        : formatReset(daily.reset_time_iso);
+      const dailyResetData = formatReset(daily.reset_time_iso);
       const weeklyResetData = result.provider === 'commandcode'
         ? formatCommandCodeResetCell(result, weekly)
         : formatReset(weekly?.reset_time_iso);
