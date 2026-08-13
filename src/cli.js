@@ -411,6 +411,7 @@ function hasPresetLabel(result, label) {
 }
 
 function sortResultsByPresetName(results) {
+  const providerOrder = { openai: 0, opencodego: 1, commandcode: 2, google: 3 };
   const entries = results.map((r, i) => ({
     r,
     i,
@@ -434,7 +435,7 @@ function sortResultsByPresetName(results) {
       return 1;
     }
 
-    const providerCmp = (a.r.provider || '').localeCompare(b.r.provider || '');
+    const providerCmp = (providerOrder[a.r.provider] ?? 99) - (providerOrder[b.r.provider] ?? 99);
     if (providerCmp !== 0) return providerCmp;
 
     const accountCmp = (a.r.account_id || '').localeCompare(b.r.account_id || '');
@@ -578,6 +579,7 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
   const openaiItems = normalized.filter(r => r.provider === 'openai');
   const googleItems = normalized.filter(r => r.provider === 'google');
   const goItems = normalized.filter(r => r.provider === 'opencodego');
+  const commandCodeItems = normalized.filter(r => r.provider === 'commandcode');
   
   const formatQuotaRow = (result, index) => {
     const daily = result.daily || {};
@@ -594,6 +596,8 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
       providerLine = chalk.blue.bold('google') + (label ? chalk.dim(` ${label}`) : '');
     } else if (result.provider === 'opencodego') {
       providerLine = chalk.magenta.bold(t('quota_opencode_go'));
+    } else if (result.provider === 'commandcode') {
+      providerLine = chalk.yellow.bold('Command Code');
     }
     
     const accountLine = result.provider === 'opencodego'
@@ -631,6 +635,10 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
 
   for (const [i, result] of goItems.entries()) {
     formatQuotaRow(result, i);
+  }
+
+  for (const [i, result] of commandCodeItems.entries()) {
+    formatQuotaRow(result, i + goItems.length);
   }
   
   if (openaiItems.length > 0) {
@@ -732,6 +740,8 @@ function renderQuotaTable(results) {
       provider = chalk.green('openai');
     } else if (provider === 'opencodego') {
       provider = chalk.magenta(t('quota_opencode_go'));
+    } else if (provider === 'commandcode') {
+      provider = chalk.yellow('Command Code');
     }
 
     let row;
