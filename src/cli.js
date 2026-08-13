@@ -508,6 +508,19 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
   return lines.join('\n');
 }
 
+export function formatCommandCodeAccountCell(result) {
+  const credits = result?.command_code_credits;
+  const usage = result?.command_code_usage;
+  const periodEnd = result?.command_code_period?.end;
+  const lines = [chalk.cyan(result?.nickname || result?.account_id || '-')];
+  if (credits) lines.push(`${chalk.dim('Credits ')}${credits.total_remaining.toFixed(2)}`);
+  if (usage && (usage.total_count || usage.total_tokens || usage.total_cost)) {
+    lines.push(`${chalk.dim('Usage ')}${usage.total_count} req · ${usage.total_tokens} tok · $${usage.total_cost.toFixed(2)}`);
+  }
+  if (periodEnd) lines.push(`${chalk.dim('Renews ')}${formatReset(periodEnd)}`);
+  return lines.join('\n');
+}
+
 function renderOpenAIBanner(results, termWidth) {
   const openaiItems = results.filter(r => r.provider === 'openai');
   if (openaiItems.length === 0) return;
@@ -607,7 +620,9 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
     
     const accountLine = result.provider === 'opencodego'
       ? formatOpenCodeGoAccountCell(result)
-      : nickname 
+      : result.provider === 'commandcode'
+        ? formatCommandCodeAccountCell(result)
+        : nickname
         ? chalk.yellow(nickname) + chalk.dim(` (${accountId})`)
         : chalk.yellow(accountId);
     
@@ -734,7 +749,9 @@ function renderQuotaTable(results) {
       : chalk.yellow(accountId);
     const accountCell = result.provider === 'opencodego'
       ? formatOpenCodeGoAccountCell(result, { includeWeekly: widths.weekly === 0 })
-      : accountDisplay;
+      : result.provider === 'commandcode'
+        ? formatCommandCodeAccountCell(result)
+        : accountDisplay;
     const presetsList = result.presets || [];
     const error = result.error;
 
@@ -1157,7 +1174,9 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
       : chalk.yellow(accountId);
     const accountCell = result.provider === 'opencodego'
       ? formatOpenCodeGoAccountCell(result, { includeWeekly: widths.weekly === 0 })
-      : accountDisplay;
+      : result.provider === 'commandcode'
+        ? formatCommandCodeAccountCell(result)
+        : accountDisplay;
     const presetsList = result.presets || [];
     const error = result.error;
 

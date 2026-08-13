@@ -923,6 +923,10 @@ export class PresetManager {
       const whoami = await request('/whoami');
       const orgId = whoami?.org?.id;
       const credits = await request('/billing/credits', { orgId });
+      const [subscription, usage] = await Promise.all([
+        request('/billing/subscriptions', { orgId }).catch(() => null),
+        request('/usage/summary', { orgId }).catch(() => null),
+      ]);
       const fiveHour = credits?.windowLimits?.fiveHour;
       const weeklyWindow = credits?.windowLimits?.weekly;
       const toRemaining = (window) => {
@@ -930,8 +934,17 @@ export class PresetManager {
         const remaining = 100 - (Number(window.used || 0) / Number(window.cap)) * 100;
         return Math.max(0, Math.min(100, Math.round(remaining)));
       };
-      const toReset = (window) => window?.resetAt ? resetTimeIsoFromSeconds(Number(window.resetAt)) : null;
+      const toReset = (window) => {
+        if (!window?.resetAt) return null;
+        if (typeof window.resetAt === 'string' && Number.isNaN(Number(window.resetAt))) {
+          return new Date(window.resetAt).toISOString();
+        }
+        return resetTimeIsoFromSeconds(Number(window.resetAt));
+      };
       const displayPath = authPath.replace(homedir(), '~');
+      const monthlyCredits = Number(credits?.credits?.monthlyCredits || 0);
+      const purchasedCredits = Number(credits?.credits?.purchasedCredits || 0);
+      const freeCredits = Number(credits?.credits?.freeCredits || 0);
 
       return [{
         provider: 'commandcode',
@@ -946,6 +959,21 @@ export class PresetManager {
           percent_remaining: toRemaining(weeklyWindow),
           reset_time_iso: toReset(weeklyWindow),
         } : null,
+        command_code_credits: {
+          monthly: monthlyCredits,
+          purchased: purchasedCredits,
+          free: freeCredits,
+          total_remaining: monthlyCredits + purchasedCredits + freeCredits,
+        },
+        command_code_usage: {
+          total_cost: Number(usage?.totalCost || 0),
+          total_count: Number(usage?.totalCount || 0),
+          total_tokens: Number(usage?.totalTokens || 0),
+        },
+        command_code_period: {
+          start: subscription?.data?.currentPeriodStart || null,
+          end: subscription?.data?.currentPeriodEnd || null,
+        },
         error: null,
       }];
     } catch (error) {

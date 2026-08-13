@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -170,6 +170,22 @@ test('OpenCode Go account cell includes monthly quota summary', () => {
   assert.match(cell, /·/);
 });
 
+test('Command Code account cell includes credits, usage, and renewal', () => {
+  const cell = formatCommandCodeAccountCell({
+    provider: 'commandcode',
+    account_id: 'org_test',
+    nickname: 'tester',
+    command_code_credits: { total_remaining: 13 },
+    command_code_usage: { total_count: 42, total_tokens: 123456, total_cost: 12.34 },
+    command_code_period: { end: '2026-09-01T00:00:00.000Z' },
+  });
+
+  assert.match(cell, /tester/);
+  assert.match(cell, /13\.00/);
+  assert.match(cell, /42 req/);
+  assert.match(cell, /123456 tok/);
+});
+
 test('OpenCode Go narrow account cell includes weekly and monthly quota summaries', () => {
   const cell = stripAnsi(formatOpenCodeGoAccountCell({
     provider: 'opencodego',
@@ -204,11 +220,12 @@ test('OpenCode Go quota bars use cyan fill while warning percents stay red and y
       monthly_reset_iso: '2026-08-01T00:00:00.000Z',
     }, { includeWeekly: true });
 
-    assert.match(cell, /\x1b\[36m█+/);
-    assert.doesNotMatch(cell, /\x1b\[32m█+/);
-    assert.match(cell, /\x1b\[33m\s*42%/);
-    assert.match(cell, /\x1b\[31m\s*12%/);
-    assert.match(formatPercent(60), /\x1b\[32m█+/);
+    const ansi = String.fromCharCode(27);
+    assert.match(cell, new RegExp(`${ansi}\\[36m█+`));
+    assert.doesNotMatch(cell, new RegExp(`${ansi}\\[32m█+`));
+    assert.match(cell, new RegExp(`${ansi}\\[33m\\s*42%`));
+    assert.match(cell, new RegExp(`${ansi}\\[31m\\s*12%`));
+    assert.match(formatPercent(60), new RegExp(`${ansi}\\[32m█+`));
   } finally {
     chalk.level = previousLevel;
   }
