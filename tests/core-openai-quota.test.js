@@ -116,8 +116,9 @@ test('collectAllQuota refreshes expired OpenAI presets in parallel and persists 
 
     assert.deepEqual(refreshCalls.sort(), ['refresh-a', 'refresh-b']);
     assert.equal(maxActiveRefreshes, 2);
-    assert.equal(results.length, 2);
-    assert.ok(results.every(result => result.error === null));
+    const openaiResults = results.filter(result => result.provider === 'openai');
+    assert.equal(openaiResults.length, 2);
+    assert.ok(openaiResults.every(result => result.error === null));
 
     assert.deepEqual(manager.lastOpenAIRefreshResults, [
       { preset_name: 'alpha', is_active: false, success: true, error: null },

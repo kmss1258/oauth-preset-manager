@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   PresetManager,
   getAntigravityAccountsPathCandidates,
+  getCommandCodeAuthPathCandidates,
   getOpenCodeAuthPathCandidates,
 } from '../src/core.js';
 
@@ -64,6 +65,13 @@ test('keeps antigravity paths aligned with XDG config/data dirs', () => {
   assert.deepEqual(candidates, [
     '/Users/alice/.config/opencode/antigravity-accounts.json',
     '/Users/alice/.local/share/opencode/antigravity-accounts.json',
+  ]);
+});
+
+test('finds Command Code auth and oauth files in the home directory', () => {
+  assert.deepEqual(getCommandCodeAuthPathCandidates('/Users/alice'), [
+    '/Users/alice/.commandcode/auth.json',
+    '/Users/alice/.commandcode/oauth.json',
   ]);
 });
 

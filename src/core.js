@@ -12,6 +12,7 @@ const OPENAI_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const OPENAI_CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const GOOGLE_QUOTA_API_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
 const GOOGLE_TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
+const COMMAND_CODE_API_URL = 'https://api.commandcode.ai/alpha';
 const OPENAI_KICKOFF_MODEL = 'gpt-5.4-mini';
 const OPENAI_KICKOFF_INPUT = 'Reply with exactly OK.';
 
@@ -45,6 +46,16 @@ export function getAntigravityAccountsPathCandidates(homeDir = homedir()) {
   return [
     join(configHome, 'opencode', 'antigravity-accounts.json'),
     join(dataHome, 'opencode', 'antigravity-accounts.json'),
+  ];
+}
+
+export function getCommandCodeAuthPathCandidates(homeDir = homedir()) {
+  const override = env.OPM_COMMAND_CODE_AUTH_PATH?.trim();
+  if (override) return [override];
+
+  return [
+    join(homeDir, '.commandcode', 'auth.json'),
+    join(homeDir, '.commandcode', 'oauth.json'),
   ];
 }
 
@@ -709,12 +720,13 @@ export class PresetManager {
   async collectAllQuota() {
     this.lastOpenAIRefreshResults = await this._refreshExpiredOpenAICredentials();
 
-    const [active, openai, opencodego] = await Promise.all([
+    const [active, openai, opencodego, commandcode] = await Promise.all([
       this.collectActiveQuota(),
       this.collectOpenAIQuota(),
       this.collectOpenCodeGoQuota(),
+      this.collectCommandCodeQuota(),
     ]);
-    return [...active, ...openai, ...opencodego];
+    return [...active, ...openai, ...opencodego, ...commandcode];
   }
 
   async _getOpenCodeGoCredentials() {
@@ -787,6 +799,77 @@ export class PresetManager {
       }];
     } catch {
       return [];
+    }
+  }
+
+  async collectCommandCodeQuota() {
+    const authPath = await findFirstExistingPath(getCommandCodeAuthPathCandidates());
+    if (!authPath) return [];
+
+    let credential;
+    try {
+      const authData = JSON.parse(await fs.readFile(authPath, 'utf-8'));
+      credential = authData?.apiKey
+        || authData?.['command-code']?.key
+        || authData?.commandcode?.access
+        || authData?.commandcode?.key;
+    } catch {
+      return [];
+    }
+
+    if (typeof credential !== 'string' || !credential.trim()) return [];
+
+    const request = (path, query = {}) => {
+      const params = new URLSearchParams(
+        Object.entries(query).filter(([, value]) => value != null && value !== '')
+      ).toString();
+      return this._requestJson(`${COMMAND_CODE_API_URL}${path}${params ? `?${params}` : ''}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${credential.trim()}`,
+          Accept: 'application/json',
+        },
+      }, 10000);
+    };
+
+    try {
+      const whoami = await request('/whoami');
+      const orgId = whoami?.org?.id;
+      const credits = await request('/billing/credits', { orgId });
+      const fiveHour = credits?.windowLimits?.fiveHour;
+      const weeklyWindow = credits?.windowLimits?.weekly;
+      const toRemaining = (window) => {
+        if (!window || !Number.isFinite(Number(window.cap))) return null;
+        const remaining = 100 - (Number(window.used || 0) / Number(window.cap)) * 100;
+        return Math.max(0, Math.min(100, Math.round(remaining)));
+      };
+      const toReset = (window) => window?.resetAt ? resetTimeIsoFromSeconds(Number(window.resetAt)) : null;
+      const displayPath = authPath.replace(homedir(), '~');
+
+      return [{
+        provider: 'commandcode',
+        account_id: orgId || whoami?.user?.userName || 'command-code',
+        nickname: whoami?.user?.userName || null,
+        presets: [`(Command Code: ${displayPath})`],
+        daily: fiveHour ? {
+          percent_remaining: toRemaining(fiveHour),
+          reset_time_iso: toReset(fiveHour),
+        } : null,
+        weekly: weeklyWindow ? {
+          percent_remaining: toRemaining(weeklyWindow),
+          reset_time_iso: toReset(weeklyWindow),
+        } : null,
+        error: null,
+      }];
+    } catch (error) {
+      return [{
+        provider: 'commandcode',
+        account_id: 'command-code',
+        presets: [`(Command Code: ${authPath.replace(homedir(), '~')})`],
+        daily: null,
+        weekly: null,
+        error: `Command Code API error: ${error.message}`,
+      }];
     }
   }
 
