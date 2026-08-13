@@ -13,7 +13,7 @@ const OPENAI_CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/respon
 const GOOGLE_QUOTA_API_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
 const GOOGLE_TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
 const COMMAND_CODE_API_URL = 'https://api.commandcode.ai/alpha';
-const OPENAI_KICKOFF_MODEL = 'gpt-5.4-mini';
+const OPENAI_KICKOFF_MODEL = 'gpt-5.6-luna';
 const OPENAI_KICKOFF_INPUT = 'Reply with exactly OK.';
 
 function normalizePlanType(value) {
@@ -473,6 +473,93 @@ export class PresetManager {
     } catch {}
 
     return results;
+  }
+
+  async propagateCurrentPresetOAuth() {
+    const sourceName = this.config?.current_preset;
+    if (!sourceName) {
+      throw new Error('No current preset is selected');
+    }
+
+    const presetData = await this.listPresetAuthData();
+    const source = presetData.find(([name]) => name === sourceName)?.[1];
+    if (!source) {
+      throw new Error(`Preset not found: ${sourceName}`);
+    }
+
+    const getIdentity = (entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      return entry.refresh || entry.access || entry.key || null;
+    };
+    const isPropagatable = (service, entry) => (
+      entry
+      && typeof entry === 'object'
+      && (entry.type === 'oauth' || (
+        ['command-code', 'commandcode'].includes(service)
+        && (entry.key || entry.access || entry.refresh)
+      ))
+      && Boolean(getIdentity(entry))
+    );
+    const sourceEntries = Object.entries(source)
+      .filter(([service, entry]) => isPropagatable(service, entry));
+    const result = {
+      source_preset: sourceName,
+      source_entries: sourceEntries.length,
+      changed: [],
+      skipped: [],
+      conflicts: [],
+    };
+
+    for (const [targetName, targetAuth] of presetData) {
+      if (targetName === sourceName) continue;
+
+      const targetIdentities = new Set(
+        Object.values(targetAuth)
+          .map(getIdentity)
+          .filter(Boolean)
+      );
+      const additions = [];
+      const skipped = [];
+      const conflicts = [];
+
+      for (const [service, entry] of sourceEntries) {
+        const identity = getIdentity(entry);
+        if (targetIdentities.has(identity)) {
+          skipped.push(service);
+          continue;
+        }
+        if (Object.prototype.hasOwnProperty.call(targetAuth, service)) {
+          conflicts.push(service);
+          continue;
+        }
+        additions.push([service, structuredClone(entry)]);
+        targetIdentities.add(identity);
+      }
+
+      if (additions.length === 0) {
+        if (skipped.length > 0) result.skipped.push({ preset_name: targetName, services: skipped });
+        if (conflicts.length > 0) result.conflicts.push({ preset_name: targetName, services: conflicts });
+        continue;
+      }
+
+      const nextAuth = { ...targetAuth };
+      for (const [service, entry] of additions) nextAuth[service] = entry;
+
+      const targetPath = join(this.presetsDir, `${targetName}.json`);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
+      const backupPath = join(this.backupsDir, `before_oauth_propagate_${targetName}_${timestamp}.json`);
+      await fs.copyFile(targetPath, backupPath);
+      await this._writeJsonAtomic(targetPath, nextAuth);
+      result.changed.push({
+        preset_name: targetName,
+        services: additions.map(([service]) => service),
+        backup_path: backupPath,
+      });
+      if (skipped.length > 0) result.skipped.push({ preset_name: targetName, services: skipped });
+      if (conflicts.length > 0) result.conflicts.push({ preset_name: targetName, services: conflicts });
+    }
+
+    return result;
   }
 
   async _writeJsonAtomic(path, data) {
