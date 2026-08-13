@@ -182,8 +182,8 @@ test('Command Code account cell includes credits, usage, and renewal', () => {
 
   assert.match(cell, /tester/);
   assert.match(cell, /13\.00/);
-  assert.match(cell, /42 req/);
-  assert.match(cell, /123456 tok/);
+  assert.match(cell, /42r/);
+  assert.match(cell, /123456t/);
 });
 
 test('OpenCode Go narrow account cell includes weekly and monthly quota summaries', () => {

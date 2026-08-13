@@ -511,14 +511,21 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
 export function formatCommandCodeAccountCell(result) {
   const credits = result?.command_code_credits;
   const usage = result?.command_code_usage;
-  const periodEnd = result?.command_code_period?.end;
   const lines = [chalk.cyan(result?.nickname || result?.account_id || '-')];
-  if (credits) lines.push(`${chalk.dim('Credits ')}${credits.total_remaining.toFixed(2)}`);
+  const details = [];
+  if (credits) details.push(`C ${credits.total_remaining.toFixed(2)}`);
   if (usage && (usage.total_count || usage.total_tokens || usage.total_cost)) {
-    lines.push(`${chalk.dim('Usage ')}${usage.total_count} req · ${usage.total_tokens} tok · $${usage.total_cost.toFixed(2)}`);
+    details.push(`U ${usage.total_count}r/${usage.total_tokens}t/$${usage.total_cost.toFixed(2)}`);
   }
-  if (periodEnd) lines.push(`${chalk.dim('Renews ')}${formatReset(periodEnd)}`);
+  lines.push(details.join(' · ') || '-');
   return lines.join('\n');
+}
+
+function formatCommandCodeProvider(result) {
+  const periodEnd = result?.command_code_period?.end;
+  return periodEnd
+    ? `${chalk.yellow('Command Code')}\n${chalk.dim(`Renews ${formatReset(periodEnd)}`)}`
+    : chalk.yellow('Command Code');
 }
 
 function renderOpenAIBanner(results, termWidth) {
@@ -615,7 +622,7 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
     } else if (result.provider === 'opencodego') {
       providerLine = chalk.magenta.bold(t('quota_opencode_go'));
     } else if (result.provider === 'commandcode') {
-      providerLine = chalk.yellow.bold('Command Code');
+      providerLine = formatCommandCodeProvider(result);
     }
     
     const accountLine = result.provider === 'opencodego'
@@ -763,7 +770,7 @@ function renderQuotaTable(results) {
     } else if (provider === 'opencodego') {
       provider = chalk.magenta(t('quota_opencode_go'));
     } else if (provider === 'commandcode') {
-      provider = chalk.yellow('Command Code');
+      provider = formatCommandCodeProvider(result);
     }
 
     let row;
