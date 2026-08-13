@@ -95,6 +95,8 @@ EOF
 }
 
 install_local() {
+    if [ ! -t 0 ]; then return 1; fi
+
     case "$SCRIPT_SOURCE" in
         /dev/fd/*|/proc/*) return 1 ;;
     esac
