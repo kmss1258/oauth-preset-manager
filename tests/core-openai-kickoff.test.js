@@ -72,7 +72,7 @@ test('runOpenAIKickoffBatch targets unique OpenAI auth entries only', async () =
 
     const batch = await manager.runOpenAIKickoffBatch();
 
-    assert.equal(batch.model, 'gpt-5.4-mini');
+    assert.equal(batch.model, 'gpt-5.6-luna');
     assert.equal(batch.results.length, 1);
     assert.equal(batch.results[0].error, null);
     assert.equal(batch.results[0].output_text, 'OK');
@@ -81,7 +81,7 @@ test('runOpenAIKickoffBatch targets unique OpenAI auth entries only', async () =
 
     const body = JSON.parse(calls[0].options.body);
     assert.deepEqual(body, {
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.6-luna',
       instructions: 'Reply with exactly OK.',
       input: [
         {

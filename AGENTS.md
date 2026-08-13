@@ -9,7 +9,7 @@ This repository contains **OAuth Preset Manager (OPM)**: a small **Node.js CLI**
 - Show quota usage for:
   - OpenAI OAuth tokens found in presets and/or the currently active `auth.json`.
   - Google quota for Antigravity accounts (from OpenCode's `antigravity-accounts.json`).
-- Provide a lightweight OpenAI-only quota kickoff action that sends one `gpt-5.4-mini` request per OpenAI OAuth target from the interactive menu.
+  - Provide a lightweight OpenAI-only quota kickoff action that sends one `gpt-5.6-luna` request per OpenAI OAuth target from the interactive menu.
 
 ## Directory Structure
 
@@ -39,7 +39,7 @@ Source-of-truth code lives under `src/`.
 - Quota:
   - OpenAI quota fetch via `https://chatgpt.com/backend-api/wham/usage`.
   - Google quota fetch via the Antigravity endpoint used by OpenCode.
-  - OpenAI kickoff batch via `https://chatgpt.com/backend-api/codex/responses` using `gpt-5.4-mini`.
+  - OpenAI kickoff batch via `https://chatgpt.com/backend-api/codex/responses` using `gpt-5.6-luna`.
   - OpenAI results are deduped by token/refresh token, not only by account id.
 
 - UI:

@@ -33,7 +33,8 @@ opm
   - Press `r` or `ㄱ` in `opm q` to refresh without changing the current quota layout.
 - **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
 - **Interactive CLI**: Beautiful interactive prompts with arrow key navigation.
-  - Includes an OpenAI-only interactive menu action that sends one `gpt-5.4-mini` request across saved OpenAI OAuth targets to kick quota back into motion after reset.
+- Includes an OpenAI-only interactive menu action that sends one `gpt-5.6-luna` request across saved OpenAI OAuth targets to kick quota back into motion after reset.
+- Includes a menu action to propagate missing OAuth entries from the current preset to other presets without overwriting existing credentials.
 - **Multi-language**: English & Korean support (auto-detected).
 
 ## 🚀 Installation
@@ -65,7 +66,7 @@ opm
 ```
 - Select a preset to switch.
 - View detailed quotas.
-- Run the OpenAI quota kickoff action when you want to send one lightweight `gpt-5.4-mini` request to each OpenAI OAuth target.
+- Run the OpenAI quota kickoff action when you want to send one lightweight `gpt-5.6-luna` request to each OpenAI OAuth target.
 - Save current configuration as a new preset.
 
 ### CLI Commands
