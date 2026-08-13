@@ -9,6 +9,7 @@ test('interactive choices include the OpenAI kickoff action', () => {
   const values = choices.filter(choice => choice && typeof choice === 'object' && 'value' in choice).map(choice => choice.value);
 
   assert.ok(values.includes('__openai_kickoff__'));
+  assert.ok(values.includes('__propagate_oauth__'));
 });
 
 test('quota key normalization accepts ㄱ as refresh', () => {

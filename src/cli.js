@@ -79,7 +79,12 @@ export function buildInteractiveChoices(presets) {
     {
       name: `  ${chalk.yellow('🧠')} ${t('openai_quota_kickoff')}`,
       value: '__openai_kickoff__',
-      description: 'Send one GPT-5.4 mini request to each OpenAI target'
+      description: 'Send one GPT-5.6 Luna request to each OpenAI target'
+    },
+    {
+      name: `  ${chalk.cyan('🔗')} ${t('propagate_oauth')}`,
+      value: '__propagate_oauth__',
+      description: 'Copy missing OAuth credentials from the current preset'
     },
     {
       name: `  ${chalk.yellow('🗑️')} ${t('delete_preset')}`,
@@ -974,6 +979,37 @@ async function deletePresetInteractive(manager, presets) {
   }
 }
 
+async function propagateOAuthInteractive(manager) {
+  console.clear();
+  printHeader();
+  const source = manager.config?.current_preset;
+  if (!source) {
+    console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_current')}`));
+    return;
+  }
+
+  const confirmed = await confirm({
+    message: chalk.cyan(`  ${t('oauth_propagate_confirm', { name: source })}`),
+    default: false,
+  });
+  if (!confirmed) return;
+
+  try {
+    const result = await manager.propagateCurrentPresetOAuth();
+    const changed = result.changed.length;
+    const skipped = result.skipped.reduce((total, item) => total + item.services.length, 0);
+    const conflicts = result.conflicts.reduce((total, item) => total + item.services.length, 0);
+    printInfoBox('✓ Success', [
+      t('oauth_propagate_complete'),
+      `${t('oauth_propagate_changed')}: ${changed}`,
+      `${t('oauth_propagate_skipped')}: ${skipped}`,
+      `${t('oauth_propagate_conflicts')}: ${conflicts}`,
+    ]);
+  } catch (error) {
+    console.log(chalk.red(`  ✗ ${t('error')}: ${error.message}`));
+  }
+}
+
 async function cmdSave(manager, name) {
   try {
     const authPath = manager.getAuthPath();
@@ -1432,6 +1468,10 @@ async function interactiveMode(manager) {
         break;
       case '__openai_kickoff__':
         await runOpenAIKickoffInteractive(manager);
+        await input({ message: chalk.dim('Press Enter to continue...') });
+        break;
+      case '__propagate_oauth__':
+        await propagateOAuthInteractive(manager);
         await input({ message: chalk.dim('Press Enter to continue...') });
         break;
       case '__delete__':
