@@ -509,7 +509,9 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
 }
 
 export function formatCommandCodeAccountCell(result) {
-  return chalk.cyan(result?.nickname || result?.account_id || '-');
+  const account = chalk.cyan(result?.nickname || result?.account_id || '-');
+  const tokens = result?.command_code_usage?.total_tokens;
+  return tokens ? `${account}\n${chalk.dim(`${tokens.toLocaleString('en-US')} tokens`)}` : account;
 }
 
 export function formatCommandCodeQuotaCell(result, window, detail = '') {
@@ -519,20 +521,25 @@ export function formatCommandCodeQuotaCell(result, window, detail = '') {
 
 function getCommandCodeDailyDetail(result) {
   const total = result?.command_code_credits?.total_remaining;
-  return total == null ? '' : `C ${total.toFixed(2)}`;
+  return total == null ? '' : `$${total.toFixed(2)} credits`;
 }
 
 function getCommandCodeWeeklyDetail(result) {
-  const usage = result?.command_code_usage;
-  if (!usage || !(usage.total_count || usage.total_tokens || usage.total_cost)) return '';
-  return `U ${usage.total_count}r/${usage.total_tokens}t/$${usage.total_cost.toFixed(2)}`;
+  const requests = result?.command_code_usage?.total_count;
+  return requests ? `${requests.toLocaleString('en-US')} requests` : '';
 }
 
-function formatCommandCodeProvider(result) {
-  const periodEnd = result?.command_code_period?.end;
-  return periodEnd
-    ? `${chalk.yellow('Command Code')}\n${chalk.dim(`Renews ${formatReset(periodEnd)}`)}`
-    : chalk.yellow('Command Code');
+function formatCommandCodeProvider() {
+  return chalk.yellow('Command Code');
+}
+
+export function formatCommandCodeResetCell(result, window, includeRenewal = false) {
+  const lines = [formatReset(window?.reset_time_iso)];
+  const periodEnd = includeRenewal ? result?.command_code_period?.end : null;
+  const totalCost = includeRenewal ? null : result?.command_code_usage?.total_cost;
+  if (periodEnd) lines.push(chalk.dim(`Renews ${formatReset(periodEnd)}`));
+  else if (totalCost != null) lines.push(chalk.dim(`$${totalCost.toFixed(2)} used`));
+  return lines.join('\n');
 }
 
 function renderOpenAIBanner(results, termWidth) {
@@ -799,13 +806,19 @@ function renderQuotaTable(results) {
       const weeklyData = result.provider === 'commandcode'
         ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
         : formatPercent(weekly?.percent_remaining, percentOptions);
+      const dailyResetData = result.provider === 'commandcode'
+        ? formatCommandCodeResetCell(result, daily, true)
+        : formatReset(daily.reset_time_iso);
+      const weeklyResetData = result.provider === 'commandcode'
+        ? formatCommandCodeResetCell(result, weekly)
+        : formatReset(weekly?.reset_time_iso);
       
       row = [
         provider,
         dailyData,
-        formatReset(daily.reset_time_iso),
+        dailyResetData,
         weeklyData,
-        formatReset(weekly?.reset_time_iso),
+        weeklyResetData,
         accountCell,
       ];
     }
@@ -1229,17 +1242,23 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
        const weeklyData = result.provider === 'commandcode'
          ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
          : formatPercent(weekly?.percent_remaining, percentOptions);
+      const dailyResetData = result.provider === 'commandcode'
+        ? formatCommandCodeResetCell(result, daily, true)
+        : formatReset(daily.reset_time_iso);
+      const weeklyResetData = result.provider === 'commandcode'
+        ? formatCommandCodeResetCell(result, weekly)
+        : formatReset(weekly?.reset_time_iso);
       const weeklyDisplay = result.provider !== 'google'
         ? weeklyData
         : chalk.gray('-');
       const weeklyResetDisplay = result.provider !== 'google'
-        ? formatReset(weekly?.reset_time_iso)
+        ? weeklyResetData
         : chalk.gray('-');
 
       row = [
         provider,
         dailyData,
-        formatReset(daily.reset_time_iso),
+        dailyResetData,
         weeklyDisplay,
         weeklyResetDisplay,
         accountCell,

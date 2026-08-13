@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -181,7 +181,17 @@ test('Command Code account cell includes credits, usage, and renewal', () => {
   });
 
   assert.match(cell, /tester/);
-  assert.equal(stripAnsi(cell), 'tester');
+  assert.equal(stripAnsi(cell), 'tester\n123,456 tokens');
+
+  const dailyReset = stripAnsi(formatCommandCodeResetCell({
+    command_code_period: { end: '2026-09-01T00:00:00.000Z' },
+  }, { reset_time_iso: '2026-08-20T00:00:00.000Z' }, true));
+  const weeklyReset = stripAnsi(formatCommandCodeResetCell({
+    command_code_usage: { total_cost: 12.34 },
+  }, { reset_time_iso: '2026-08-21T00:00:00.000Z' }));
+
+  assert.match(dailyReset, /Renews/);
+  assert.match(weeklyReset, /\$12\.34 used/);
 });
 
 test('OpenCode Go narrow account cell includes weekly and monthly quota summaries', () => {
