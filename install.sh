@@ -7,6 +7,7 @@ STATE_DIR="$HOME/.config/oauth-preset-manager"
 STATE_FILE="$STATE_DIR/install-launcher-path"
 NODE_VERSION_MIN=18
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 
 echo "🚀 OPM (OAuth Preset Manager) - Node.js Edition Installer"
 echo ""
@@ -94,6 +95,10 @@ EOF
 }
 
 install_local() {
+    case "$SCRIPT_SOURCE" in
+        /dev/fd/*|/proc/*) return 1 ;;
+    esac
+
     if [ -f "$SCRIPT_DIR/package.json" ] && [ -d "$SCRIPT_DIR/src" ]; then
         echo "📦 Installing from local directory..."
         (

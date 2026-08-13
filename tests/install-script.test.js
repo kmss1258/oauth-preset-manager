@@ -12,4 +12,5 @@ test('install.sh launcher uses explicit install root argument', async () => {
   assert.match(script, /cd "\$SCRIPT_DIR"/);
   assert.match(script, /install_launcher "\$\(find_launcher_dir\)" "\$SCRIPT_DIR"/);
   assert.match(script, /install_launcher "\$\(find_launcher_dir\)" "\$INSTALL_DIR"/);
+  assert.match(script, /\/dev\/fd\/\*\|\/proc\/\*/);
 });
