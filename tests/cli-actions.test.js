@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatQuotaRefreshCountdown, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
+import { setLanguage } from '../src/i18n.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -23,6 +25,61 @@ test('quota key normalization accepts ㄱ as refresh', () => {
 
 test('quota footer text stays unchanged', () => {
   assert.equal(QUOTA_FOOTER_TEXT, '  [r] Refresh  [g] Toggle Google details  [q] Exit');
+});
+
+test('quota countdown uses ceil and never goes below zero', () => {
+  const deadline = 60_000;
+  assert.equal(getQuotaRefreshCountdownSeconds(deadline, 0), 60);
+  assert.equal(getQuotaRefreshCountdownSeconds(deadline, 1), 60);
+  assert.equal(getQuotaRefreshCountdownSeconds(deadline, 1_001), 59);
+  assert.equal(getQuotaRefreshCountdownSeconds(deadline, 60_001), 0);
+  assert.equal(QUOTA_REFRESH_INTERVAL_MS, 60_000);
+});
+
+test('quota countdown is translated in English and Korean', () => {
+  setLanguage('en');
+  assert.equal(formatQuotaRefreshCountdown(12), 'Auto-refresh in 12s');
+  setLanguage('ko');
+  assert.equal(formatQuotaRefreshCountdown(12), '12초 후 자동 새로고침');
+  setLanguage('en');
+});
+
+function withFakeStdin(run) {
+  const originalStdin = process.stdin;
+  const stdin = new EventEmitter();
+  stdin.isTTY = true;
+  stdin.isRaw = false;
+  stdin.paused = true;
+  stdin.isPaused = () => stdin.paused;
+  stdin.setRawMode = value => { stdin.isRaw = value; };
+  stdin.resume = () => { stdin.paused = false; };
+  stdin.pause = () => { stdin.paused = true; };
+  Object.defineProperty(process, 'stdin', { configurable: true, value: stdin });
+
+  return Promise.resolve()
+    .then(run)
+    .finally(() => Object.defineProperty(process, 'stdin', { configurable: true, value: originalStdin }));
+}
+
+test('timed quota keypress removes listener and restores raw and pause state', async () => {
+  await withFakeStdin(async () => {
+    const action = await waitForQuotaKeypress(5);
+    assert.equal(action, 'timeout');
+    assert.equal(process.stdin.listenerCount('data'), 0);
+    assert.equal(process.stdin.isRaw, false);
+    assert.equal(process.stdin.isPaused(), true);
+  });
+});
+
+test('quota keypress wins a timeout race without a second resolution', async () => {
+  await withFakeStdin(async () => {
+    const actionPromise = waitForQuotaKeypress(20);
+    process.stdin.emit('data', Buffer.from('r'));
+    assert.equal(await actionPromise, 'r');
+    assert.equal(process.stdin.listenerCount('data'), 0);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(process.stdin.listenerCount('data'), 0);
+  });
 });
 
 test('quota normalization preserves distinct preset rows for the same OpenAI account', () => {

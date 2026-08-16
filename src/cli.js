@@ -36,6 +36,15 @@ const BOX = {
 };
 
 export const QUOTA_FOOTER_TEXT = '  [r] Refresh  [g] Toggle Google details  [q] Exit';
+export const QUOTA_REFRESH_INTERVAL_MS = 60_000;
+
+export function getQuotaRefreshCountdownSeconds(deadline, now = Date.now()) {
+  return Math.max(0, Math.ceil((deadline - now) / 1000));
+}
+
+export function formatQuotaRefreshCountdown(seconds) {
+  return t('quota_auto_refresh_countdown', { seconds });
+}
 
 export function normalizeQuotaActionKey(text) {
   if (typeof text !== 'string') return null;
@@ -604,7 +613,7 @@ function calculateColWidths(totalWidth) {
   }
 }
 
-function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
+function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countdownSeconds = null) {
   console.log();
   console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
   console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
@@ -613,6 +622,10 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false) {
   
   const normalized = normalizeQuotaResults(results);
   renderOpenAIBanner(normalized, termWidth);
+  if (countdownSeconds != null) {
+    console.log(chalk.dim(`  ${formatQuotaRefreshCountdown(countdownSeconds)}`));
+    console.log();
+  }
   const openaiItems = normalized.filter(r => r.provider === 'openai');
   const googleItems = normalized.filter(r => r.provider === 'google');
   const goItems = normalized.filter(r => r.provider === 'opencodego');
@@ -1108,11 +1121,14 @@ async function renderGoogleModelsDetail(results, termWidth) {
   console.log();
 }
 
-function waitForQuotaKeypress() {
+export function waitForQuotaKeypress(timeoutMs = null) {
   if (!process.stdin.isTTY) return Promise.resolve('return');
 
   return new Promise(resolve => {
     const wasRawMode = process.stdin.isRaw;
+    const wasPaused = process.stdin.isPaused();
+    let timeoutHandle = null;
+    let settled = false;
 
     if (process.stdin.setRawMode && !wasRawMode) {
       process.stdin.setRawMode(true);
@@ -1120,39 +1136,53 @@ function waitForQuotaKeypress() {
 
     const cleanup = () => {
       process.stdin.off('data', onData);
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
       if (process.stdin.setRawMode && !wasRawMode) {
         process.stdin.setRawMode(false);
       }
+      if (wasPaused) {
+        process.stdin.pause();
+      }
+    };
+
+    const finish = action => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(action);
     };
 
     const onData = (chunk) => {
       const text = chunk.toString('utf8');
 
       if (text === '\u001b') {
-        cleanup();
-        resolve('escape');
+        finish('escape');
         return;
       }
 
       if (text === '\r' || text === '\n') {
-        cleanup();
-        resolve('return');
+        finish('return');
         return;
       }
 
       const key = normalizeQuotaActionKey(text);
       if (key) {
-        cleanup();
-        resolve(key);
+        finish(key);
       }
     };
 
     process.stdin.on('data', onData);
     process.stdin.resume();
+    if (timeoutMs != null) {
+      timeoutHandle = setTimeout(() => finish('timeout'), Math.max(0, timeoutMs));
+    }
   });
 }
 
-async function renderQuotaTableWithToggle(results, showGoogle = true) {
+async function renderQuotaTableWithToggle(results, showGoogle = true, countdownSeconds = null) {
   const termWidth = getTerminalWidth();
   const normalized = normalizeQuotaResults(results);
   if (!normalized.length) {
@@ -1270,6 +1300,10 @@ async function renderQuotaTableWithToggle(results, showGoogle = true) {
   if (activeRows.length > 0 && presetRows.length > 0) table.push([]);
   for (const row of presetRows) table.push(row);
   
+  if (countdownSeconds != null) {
+    console.log(chalk.dim(`  ${formatQuotaRefreshCountdown(countdownSeconds)}`));
+    console.log();
+  }
   console.log(table.toString());
   console.log();
   
@@ -1292,6 +1326,7 @@ async function cmdQuota(manager) {
   try {
     let cacheWarning = null;
     const initialResults = await manager.collectAllQuota();
+    let refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
     try {
       await manager.cacheQuotaResults(initialResults);
     } catch (error) {
@@ -1310,11 +1345,14 @@ async function cmdQuota(manager) {
       renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
 
       const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
+      const countdownSeconds = interactive
+        ? getQuotaRefreshCountdownSeconds(refreshDeadline)
+        : null;
       
       if (termWidth >= 80) {
-        await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable);
+        await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds);
       } else {
-        renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail);
+        renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds);
         if (showGoogleDetail && googleCount > 0) {
           await renderGoogleModelsDetail(normalizedResults, termWidth);
         }
@@ -1330,10 +1368,26 @@ async function cmdQuota(manager) {
       }
 
       console.log(chalk.dim(QUOTA_FOOTER_TEXT));
-      const action = await waitForQuotaKeypress();
+      const waitMs = Math.min(1000, Math.max(0, refreshDeadline - Date.now()));
+      const action = await waitForQuotaKeypress(waitMs);
+
+      if (action === 'timeout') {
+        if (Date.now() < refreshDeadline) continue;
+        const refreshedResults = await manager.collectAllQuota();
+        refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
+        cacheWarning = null;
+        try {
+          await manager.cacheQuotaResults(refreshedResults);
+        } catch (error) {
+          cacheWarning = error.message;
+        }
+        normalizedResults = normalizeQuotaResults(refreshedResults);
+        continue;
+      }
 
       if (action === 'r') {
         const refreshedResults = await manager.collectAllQuota();
+        refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
         cacheWarning = null;
         try {
           await manager.cacheQuotaResults(refreshedResults);
