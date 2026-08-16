@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatQuotaRefreshCountdown, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
 
 test('interactive choices include the OpenAI kickoff action', () => {
@@ -42,6 +42,15 @@ test('quota countdown is translated in English and Korean', () => {
   setLanguage('ko');
   assert.equal(formatQuotaRefreshCountdown(12), '12초 후 자동 새로고침');
   setLanguage('en');
+});
+
+test('countdown tick updates only the saved countdown line', () => {
+  const writes = [];
+  const output = { write: value => writes.push(value) };
+
+  assert.equal(formatQuotaCountdownLine(12), '  Auto-refresh in 12s');
+  updateQuotaCountdownLine(11, output);
+  assert.deepEqual(writes, ['\u001b8\u001b[2K\r  Auto-refresh in 11s\u001b[u']);
 });
 
 function withFakeStdin(run) {

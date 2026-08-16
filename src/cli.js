@@ -46,6 +46,14 @@ export function formatQuotaRefreshCountdown(seconds) {
   return t('quota_auto_refresh_countdown', { seconds });
 }
 
+export function formatQuotaCountdownLine(seconds) {
+  return chalk.dim(`  ${formatQuotaRefreshCountdown(seconds)}`);
+}
+
+export function updateQuotaCountdownLine(seconds, output = process.stdout) {
+  output.write(`\u001b8\u001b[2K\r${formatQuotaCountdownLine(seconds)}\u001b[u`);
+}
+
 export function normalizeQuotaActionKey(text) {
   if (typeof text !== 'string') return null;
 
@@ -623,7 +631,8 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countd
   const normalized = normalizeQuotaResults(results);
   renderOpenAIBanner(normalized, termWidth);
   if (countdownSeconds != null) {
-    console.log(chalk.dim(`  ${formatQuotaRefreshCountdown(countdownSeconds)}`));
+    process.stdout.write('\u001b7');
+    console.log(formatQuotaCountdownLine(countdownSeconds));
     console.log();
   }
   const openaiItems = normalized.filter(r => r.provider === 'openai');
@@ -1301,7 +1310,8 @@ async function renderQuotaTableWithToggle(results, showGoogle = true, countdownS
   for (const row of presetRows) table.push(row);
   
   if (countdownSeconds != null) {
-    console.log(chalk.dim(`  ${formatQuotaRefreshCountdown(countdownSeconds)}`));
+    process.stdout.write('\u001b7');
+    console.log(formatQuotaCountdownLine(countdownSeconds));
     console.log();
   }
   console.log(table.toString());
@@ -1338,41 +1348,52 @@ async function cmdQuota(manager) {
     let showGoogleDetail = false;
     let showGoogleInTable = false;
     
+    let needsRender = true;
     while (true) {
-      console.clear();
-      printHeader();
+      if (needsRender) {
+        console.clear();
+        printHeader();
 
-      renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
+        renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
 
-      const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
-      const countdownSeconds = interactive
-        ? getQuotaRefreshCountdownSeconds(refreshDeadline)
-        : null;
-      
-      if (termWidth >= 80) {
-        await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds);
-      } else {
-        renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds);
-        if (showGoogleDetail && googleCount > 0) {
-          await renderGoogleModelsDetail(normalizedResults, termWidth);
+        const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
+        const countdownSeconds = interactive
+          ? getQuotaRefreshCountdownSeconds(refreshDeadline)
+          : null;
+
+        if (termWidth >= 80) {
+          await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds);
+        } else {
+          renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds);
+          if (showGoogleDetail && googleCount > 0) {
+            await renderGoogleModelsDetail(normalizedResults, termWidth);
+          }
         }
+
+        if (cacheWarning) {
+          console.log(chalk.red(`  ⚠ Quota cache save failed: ${cacheWarning}`));
+          console.log();
+        }
+
+        if (!interactive) {
+          break;
+        }
+
+        console.log(chalk.dim(QUOTA_FOOTER_TEXT));
+        process.stdout.write('\u001b[s');
+        needsRender = false;
       }
 
-      if (cacheWarning) {
-        console.log(chalk.red(`  ⚠ Quota cache save failed: ${cacheWarning}`));
-        console.log();
-      }
-      
-      if (!interactive) {
-        break;
-      }
-
-      console.log(chalk.dim(QUOTA_FOOTER_TEXT));
       const waitMs = Math.min(1000, Math.max(0, refreshDeadline - Date.now()));
       const action = await waitForQuotaKeypress(waitMs);
 
       if (action === 'timeout') {
-        if (Date.now() < refreshDeadline) continue;
+        if (Date.now() < refreshDeadline) {
+          if (termWidth < 80 || normalizedResults.length > 0) {
+            updateQuotaCountdownLine(getQuotaRefreshCountdownSeconds(refreshDeadline));
+          }
+          continue;
+        }
         const refreshedResults = await manager.collectAllQuota();
         refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
         cacheWarning = null;
@@ -1382,6 +1403,7 @@ async function cmdQuota(manager) {
           cacheWarning = error.message;
         }
         normalizedResults = normalizeQuotaResults(refreshedResults);
+        needsRender = true;
         continue;
       }
 
@@ -1395,6 +1417,7 @@ async function cmdQuota(manager) {
           cacheWarning = error.message;
         }
         normalizedResults = normalizeQuotaResults(refreshedResults);
+        needsRender = true;
         continue;
       }
 
@@ -1404,6 +1427,7 @@ async function cmdQuota(manager) {
         } else {
           showGoogleDetail = !showGoogleDetail;
         }
+        needsRender = true;
         continue;
       }
 
