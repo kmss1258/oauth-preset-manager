@@ -47,10 +47,11 @@ test('quota countdown is translated in English and Korean', () => {
 test('countdown tick updates only the saved countdown line', () => {
   const writes = [];
   const output = { write: value => writes.push(value) };
+  const now = new Date(2026, 7, 17, 14, 5, 6);
 
-  assert.equal(formatQuotaCountdownLine(12), '  Auto-refresh in 12s');
-  updateQuotaCountdownLine(11, output);
-  assert.deepEqual(writes, ['\u001b8\u001b[2K\r  Auto-refresh in 11s\u001b[u']);
+  assert.equal(formatQuotaCountdownLine(12, now), '  Current 14:05:06 · Auto-refresh in 12s');
+  updateQuotaCountdownLine(11, output, now);
+  assert.deepEqual(writes, ['\u001b8\u001b[2K\r  Current 14:05:06 · Auto-refresh in 11s\u001b[u']);
 });
 
 function withFakeStdin(run) {

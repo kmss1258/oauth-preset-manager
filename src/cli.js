@@ -46,12 +46,16 @@ export function formatQuotaRefreshCountdown(seconds) {
   return t('quota_auto_refresh_countdown', { seconds });
 }
 
-export function formatQuotaCountdownLine(seconds) {
-  return chalk.dim(`  ${formatQuotaRefreshCountdown(seconds)}`);
+export function formatQuotaCountdownLine(seconds, now = new Date()) {
+  const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+    .map(value => String(value).padStart(2, '0'))
+    .join(':');
+
+  return `  ${chalk.cyan(t('quota_current_time', { time }))} ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
 }
 
-export function updateQuotaCountdownLine(seconds, output = process.stdout) {
-  output.write(`\u001b8\u001b[2K\r${formatQuotaCountdownLine(seconds)}\u001b[u`);
+export function updateQuotaCountdownLine(seconds, output = process.stdout, now = new Date()) {
+  output.write(`\u001b8\u001b[2K\r${formatQuotaCountdownLine(seconds, now)}\u001b[u`);
 }
 
 export function normalizeQuotaActionKey(text) {
