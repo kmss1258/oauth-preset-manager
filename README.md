@@ -30,7 +30,8 @@ opm
 - **Quota Table**: View quota usage in a Rich table for OpenAI & Google (Antigravity) accounts.
   - Supports detailed breakdown for Antigravity models (Flash, Pro, Claude).
   - Visual progress bars and reset timers.
-  - Press `r` or `ㄱ` in `opm q` to refresh without changing the current quota layout.
+  - `opm q` refreshes automatically every 60 seconds and shows the next-refresh countdown above the table.
+  - Press `r` or `ㄱ` in `opm q` to refresh immediately without changing the current quota layout.
 - **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
 - **Interactive CLI**: Beautiful interactive prompts with arrow key navigation.
 - Includes an OpenAI-only interactive menu action that sends one `gpt-5.6-luna` request across saved OpenAI OAuth targets to kick quota back into motion after reset.
@@ -84,7 +85,7 @@ opm q
 ```
 > Shows usage for all presets + currently active Antigravity session.
 > Renders a Rich table with provider, quota, reset, account, preset, and error columns.
-> Press `r` or `ㄱ` to refresh the quota screen.
+> The interactive quota screen refreshes automatically every 60 seconds and shows the next refresh above the table. Press `r` or `ㄱ` to refresh immediately.
 
 **Save Current Auth:**
 ```bash
