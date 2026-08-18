@@ -1,6 +1,6 @@
 {
   "name": "oauth-preset-manager",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Manage OpenCode OAuth presets with ease - Node.js Edition",
   "type": "module",
   "main": "src/cli.js",
