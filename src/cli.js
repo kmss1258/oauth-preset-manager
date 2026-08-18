@@ -93,6 +93,12 @@ export function formatPeakStatus(state) {
   return t('quota_peak_off');
 }
 
+function colorizePeakStatus(state, text) {
+  if (state.phase === 'active') return chalk.red(text);
+  if (state.phase === 'pre-alert') return chalk.yellow(text);
+  return chalk.green(text);
+}
+
 function shouldRenderPeakBorder(output, interactive) {
   return Boolean(interactive === true && output?.isTTY && !process.env.NO_COLOR && !process.env.CI);
 }
@@ -123,7 +129,7 @@ export function formatQuotaCountdownLine(seconds, now = new Date(), peakState = 
   const refreshSegment = seconds == null
     ? ''
     : ` ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
-  const line = `  ${chalk.cyan(t('quota_current_time', { time }))} ${chalk.gray('·')} ${chalk.magenta(formatPeakStatus(peakState))}${refreshSegment}`;
+  const line = `  ${chalk.cyan(t('quota_current_time', { time }))} ${chalk.gray('·')} ${colorizePeakStatus(peakState, formatPeakStatus(peakState))}${refreshSegment}`;
   return peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive)
     ? peakBorder(line, epochSeconds(now))
     : line;

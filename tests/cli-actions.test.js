@@ -57,7 +57,15 @@ test('peak state uses UTC daily boundaries and exposes the KST schedule', () => 
   assert.equal(getPeakState(Date.UTC(2026, 7, 17, 6, 0, 0)).phase, 'active');
   assert.equal(getPeakState(Date.UTC(2026, 7, 17, 10, 0, 0)).phase, 'off');
   assert.equal(getPeakState(Date.UTC(2026, 7, 17, 15, 0, 0)).phase, 'off');
-  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), 'Peak starts in 00:30:00');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), 'Peak entry warning · starts in 00:30:00');
+});
+
+test('Korean peak labels are exact and retain countdown/schedule details', () => {
+  setLanguage('ko');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), '피크 진입 주의 · 00:30:00 후 시작');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 1, 30, 0))), '피크 모드 활성 · 02:30:00 후 종료');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '피크 어림 없음 · 일정: UTC 01:00–04:00, 06:00–10:00 / KST 10:00–13:00, 15:00–19:00');
+  setLanguage('en');
 });
 
 test('peak countdown formatting uses readable minute and second units', () => {
@@ -106,6 +114,32 @@ test('quota status line omits refresh countdown when refresh is disabled', () =>
   assert.match(line, /Current KST 23:05:06/);
   assert.doesNotMatch(line, /Auto-refresh/);
   assert.doesNotMatch(line, new RegExp(`${ESC}\\[`));
+});
+
+test('peak status colors distinguish off, pre-alert, and active states', () => {
+  const previousLevel = chalk.level;
+  const originalNoColor = process.env.NO_COLOR;
+  const originalCi = process.env.CI;
+  const output = { isTTY: false };
+  try {
+    setLanguage('ko');
+    chalk.level = 1;
+    delete process.env.NO_COLOR;
+    delete process.env.CI;
+    const off = formatQuotaCountdownLine(null, new Date(Date.UTC(2026, 7, 17, 12, 0, 0)), getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0)), { output, interactive: false });
+    const preAlert = formatQuotaCountdownLine(null, new Date(Date.UTC(2026, 7, 17, 0, 30, 0)), getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0)), { output, interactive: false });
+    const active = formatQuotaCountdownLine(null, new Date(Date.UTC(2026, 7, 17, 1, 30, 0)), getPeakState(Date.UTC(2026, 7, 17, 1, 30, 0)), { output, interactive: false });
+    assert.match(off, new RegExp(`${ESC}\\[32m피크 어림 없음`));
+    assert.match(preAlert, new RegExp(`${ESC}\\[33m피크 진입 주의`));
+    assert.match(active, new RegExp(`${ESC}\\[31m피크 모드 활성`));
+  } finally {
+    setLanguage('en');
+    chalk.level = previousLevel;
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+    if (originalCi === undefined) delete process.env.CI;
+    else process.env.CI = originalCi;
+  }
 });
 
 test('active peak border respects NO_COLOR and CI', () => {
