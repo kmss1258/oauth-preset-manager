@@ -3,8 +3,10 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
+
+const ESC = String.fromCharCode(27);
 
 test('interactive choices include the OpenAI kickoff action', () => {
   const choices = buildInteractiveChoices([]);
@@ -44,14 +46,84 @@ test('quota countdown is translated in English and Korean', () => {
   setLanguage('en');
 });
 
+test('peak state uses UTC daily boundaries and exposes the KST schedule', () => {
+  const before = getPeakState(Date.UTC(2026, 7, 17, 0, 0, 0));
+  assert.equal(before.phase, 'pre-alert');
+  assert.equal(before.secondsRemaining, 3600);
+
+  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 1, 0, 0)).phase, 'active');
+  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 4, 0, 0)).phase, 'off');
+  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 5, 0, 0)).phase, 'pre-alert');
+  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 6, 0, 0)).phase, 'active');
+  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 10, 0, 0)).phase, 'off');
+  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 15, 0, 0)).phase, 'off');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), 'Peak starts in 00:30:00');
+});
+
+test('peak countdown formatting uses readable minute and second units', () => {
+  assert.equal(formatPeakCountdown(3600), '01:00:00');
+  assert.equal(formatPeakCountdown(1800), '00:30:00');
+  assert.equal(formatPeakCountdown(1), '00:00:01');
+});
+
 test('countdown tick updates only the saved countdown line', () => {
   const writes = [];
   const output = { write: value => writes.push(value) };
-  const now = new Date(2026, 7, 17, 14, 5, 6);
+  const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
 
-  assert.equal(formatQuotaCountdownLine(12, now), '  Current 14:05:06 · Auto-refresh in 12s');
+  assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 · ${formatPeakStatus(getPeakState(now))} · Auto-refresh in 12s`));
   updateQuotaCountdownLine(11, output, now);
-  assert.deepEqual(writes, ['\u001b8\u001b[2K\r  Current 14:05:06 · Auto-refresh in 11s\u001b[u']);
+  assert.match(writes[0], new RegExp(`${ESC}8${ESC}\\[2K\\r  Current KST 23:05:06 · .* · Auto-refresh in 11s${ESC}\\[u`));
+});
+
+test('active peak status border rotates in TTY output and stays off otherwise', () => {
+  const now = new Date(Date.UTC(2026, 7, 17, 1, 0, 1));
+  const tty = { isTTY: true };
+  const plain = { isTTY: false };
+  const originalNoColor = process.env.NO_COLOR;
+  const originalCi = process.env.CI;
+  try {
+    delete process.env.NO_COLOR;
+    delete process.env.CI;
+    const first = formatQuotaCountdownLine(12, now, getPeakState(now), { output: tty, interactive: true });
+    const next = formatQuotaCountdownLine(12, new Date(now.getTime() + 1000), getPeakState(now.getTime() + 1000), { output: tty, interactive: true });
+    assert.match(first, new RegExp(`${ESC}\\[38;2;\\d+;\\d+;\\d+m│`));
+    assert.notEqual(first, next);
+    assert.doesNotMatch(formatQuotaCountdownLine(12, now, getPeakState(now), { output: tty }), new RegExp(`${ESC}\\[`));
+    assert.doesNotMatch(formatQuotaCountdownLine(12, now, getPeakState(now), { output: tty, interactive: false }), new RegExp(`${ESC}\\[`));
+    assert.doesNotMatch(formatQuotaCountdownLine(12, now, getPeakState(now), { output: plain }), new RegExp(`${ESC}\\[`));
+  } finally {
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+    if (originalCi === undefined) delete process.env.CI;
+    else process.env.CI = originalCi;
+  }
+});
+
+test('quota status line omits refresh countdown when refresh is disabled', () => {
+  const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
+  const line = formatQuotaCountdownLine(null, now, getPeakState(now), { output: { isTTY: false } });
+  assert.match(line, /Current KST 23:05:06/);
+  assert.doesNotMatch(line, /Auto-refresh/);
+  assert.doesNotMatch(line, new RegExp(`${ESC}\\[`));
+});
+
+test('active peak border respects NO_COLOR and CI', () => {
+  const now = new Date(Date.UTC(2026, 7, 17, 1, 0, 1));
+  const originalNoColor = process.env.NO_COLOR;
+  const originalCi = process.env.CI;
+  try {
+    process.env.NO_COLOR = '1';
+    assert.doesNotMatch(formatQuotaCountdownLine(12, now, getPeakState(now), { output: { isTTY: true } }), new RegExp(`${ESC}\\[`));
+    delete process.env.NO_COLOR;
+    process.env.CI = '1';
+    assert.doesNotMatch(formatQuotaCountdownLine(12, now, getPeakState(now), { output: { isTTY: true } }), new RegExp(`${ESC}\\[`));
+  } finally {
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+    if (originalCi === undefined) delete process.env.CI;
+    else process.env.CI = originalCi;
+  }
 });
 
 function withFakeStdin(run) {

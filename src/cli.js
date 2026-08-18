@@ -38,6 +38,71 @@ const BOX = {
 export const QUOTA_FOOTER_TEXT = '  [r] Refresh  [g] Toggle Google details  [q] Exit';
 export const QUOTA_REFRESH_INTERVAL_MS = 60_000;
 
+const UTC_DAY_SECONDS = 24 * 60 * 60;
+export const PEAK_WINDOWS = [
+  { start: 1 * 60 * 60, end: 4 * 60 * 60 },
+  { start: 6 * 60 * 60, end: 10 * 60 * 60 },
+];
+const PEAK_BORDER_COLORS = [
+  [255, 179, 186],
+  [255, 223, 186],
+  [255, 255, 186],
+  [186, 255, 201],
+  [186, 225, 255],
+  [218, 186, 255],
+];
+
+function epochSeconds(value) {
+  const milliseconds = value instanceof Date ? value.getTime() : value;
+  return Math.floor(milliseconds / 1000);
+}
+
+export function getPeakState(value = Date.now()) {
+  const seconds = epochSeconds(value);
+  const daySecond = ((seconds % UTC_DAY_SECONDS) + UTC_DAY_SECONDS) % UTC_DAY_SECONDS;
+  const activeWindow = PEAK_WINDOWS.find(window => daySecond >= window.start && daySecond < window.end);
+  if (activeWindow) {
+    return { phase: 'active', secondsRemaining: activeWindow.end - daySecond, window: activeWindow };
+  }
+
+  const nextWindow = PEAK_WINDOWS.find(window => daySecond < window.start);
+  const upcoming = nextWindow || PEAK_WINDOWS[0];
+  const start = nextWindow ? upcoming.start : upcoming.start + UTC_DAY_SECONDS;
+  if (start - daySecond <= 60 * 60) {
+    return { phase: 'pre-alert', secondsRemaining: start - daySecond, window: upcoming };
+  }
+
+  return { phase: 'off', secondsRemaining: null, window: null };
+}
+
+export function formatPeakCountdown(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return [hours, minutes, remainingSeconds].map(value => String(value).padStart(2, '0')).join(':');
+}
+
+export function formatPeakStatus(state) {
+  if (state.phase === 'active') {
+    return t('quota_peak_active', { duration: formatPeakCountdown(state.secondsRemaining) });
+  }
+  if (state.phase === 'pre-alert') {
+    return t('quota_peak_pre_alert', { duration: formatPeakCountdown(state.secondsRemaining) });
+  }
+  return t('quota_peak_off');
+}
+
+function shouldRenderPeakBorder(output, interactive) {
+  return Boolean(interactive === true && output?.isTTY && !process.env.NO_COLOR && !process.env.CI);
+}
+
+function peakBorder(text, epoch) {
+  const [r, g, b] = PEAK_BORDER_COLORS[epoch % PEAK_BORDER_COLORS.length];
+  const color = `\x1b[38;2;${r};${g};${b}m`;
+  return `${color}│\x1b[39m${text}${color}│\x1b[39m`;
+}
+
 export function getQuotaRefreshCountdownSeconds(deadline, now = Date.now()) {
   return Math.max(0, Math.ceil((deadline - now) / 1000));
 }
@@ -46,16 +111,26 @@ export function formatQuotaRefreshCountdown(seconds) {
   return t('quota_auto_refresh_countdown', { seconds });
 }
 
-export function formatQuotaCountdownLine(seconds, now = new Date()) {
-  const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
-    .map(value => String(value).padStart(2, '0'))
-    .join(':');
+export function formatQuotaCountdownLine(seconds, now = new Date(), peakState = getPeakState(now), options = {}) {
+  const time = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Seoul',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(now);
 
-  return `  ${chalk.cyan(t('quota_current_time', { time }))} ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
+  const refreshSegment = seconds == null
+    ? ''
+    : ` ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
+  const line = `  ${chalk.cyan(t('quota_current_time', { time }))} ${chalk.gray('·')} ${chalk.magenta(formatPeakStatus(peakState))}${refreshSegment}`;
+  return peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive)
+    ? peakBorder(line, epochSeconds(now))
+    : line;
 }
 
 export function updateQuotaCountdownLine(seconds, output = process.stdout, now = new Date()) {
-  output.write(`\u001b8\u001b[2K\r${formatQuotaCountdownLine(seconds, now)}\u001b[u`);
+  output.write(`\u001b8\u001b[2K\r${formatQuotaCountdownLine(seconds, now, getPeakState(now), { output, interactive: true })}\u001b[u`);
 }
 
 export function normalizeQuotaActionKey(text) {
@@ -625,7 +700,7 @@ function calculateColWidths(totalWidth) {
   }
 }
 
-function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countdownSeconds = null) {
+function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countdownSeconds = null, now = new Date()) {
   console.log();
   console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
   console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
@@ -634,11 +709,14 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countd
   
   const normalized = normalizeQuotaResults(results);
   renderOpenAIBanner(normalized, termWidth);
-  if (countdownSeconds != null) {
+  if (countdownSeconds != null && process.stdout.isTTY) {
     process.stdout.write('\u001b7');
-    console.log(formatQuotaCountdownLine(countdownSeconds));
-    console.log();
   }
+  console.log(formatQuotaCountdownLine(countdownSeconds, now, getPeakState(now), {
+    output: process.stdout,
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  }));
+  console.log();
   const openaiItems = normalized.filter(r => r.provider === 'openai');
   const googleItems = normalized.filter(r => r.provider === 'google');
   const goItems = normalized.filter(r => r.provider === 'opencodego');
@@ -1195,7 +1273,7 @@ export function waitForQuotaKeypress(timeoutMs = null) {
   });
 }
 
-async function renderQuotaTableWithToggle(results, showGoogle = true, countdownSeconds = null) {
+async function renderQuotaTableWithToggle(results, showGoogle = true, countdownSeconds = null, now = new Date()) {
   const termWidth = getTerminalWidth();
   const normalized = normalizeQuotaResults(results);
   if (!normalized.length) {
@@ -1313,11 +1391,14 @@ async function renderQuotaTableWithToggle(results, showGoogle = true, countdownS
   if (activeRows.length > 0 && presetRows.length > 0) table.push([]);
   for (const row of presetRows) table.push(row);
   
-  if (countdownSeconds != null) {
+  if (countdownSeconds != null && process.stdout.isTTY) {
     process.stdout.write('\u001b7');
-    console.log(formatQuotaCountdownLine(countdownSeconds));
-    console.log();
   }
+  console.log(formatQuotaCountdownLine(countdownSeconds, now, getPeakState(now), {
+    output: process.stdout,
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  }));
+  console.log();
   console.log(table.toString());
   console.log();
   
@@ -1355,6 +1436,7 @@ async function cmdQuota(manager) {
     let needsRender = true;
     while (true) {
       if (needsRender) {
+        const tickNow = new Date();
         console.clear();
         printHeader();
 
@@ -1362,13 +1444,13 @@ async function cmdQuota(manager) {
 
         const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
         const countdownSeconds = interactive
-          ? getQuotaRefreshCountdownSeconds(refreshDeadline)
+          ? getQuotaRefreshCountdownSeconds(refreshDeadline, tickNow.getTime())
           : null;
 
         if (termWidth >= 80) {
-          await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds);
+          await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds, tickNow);
         } else {
-          renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds);
+          renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds, tickNow);
           if (showGoogleDetail && googleCount > 0) {
             await renderGoogleModelsDetail(normalizedResults, termWidth);
           }
@@ -1392,9 +1474,11 @@ async function cmdQuota(manager) {
       const action = await waitForQuotaKeypress(waitMs);
 
       if (action === 'timeout') {
-        if (Date.now() < refreshDeadline) {
+        const tickNow = Date.now();
+        if (tickNow < refreshDeadline) {
           if (termWidth < 80 || normalizedResults.length > 0) {
-            updateQuotaCountdownLine(getQuotaRefreshCountdownSeconds(refreshDeadline));
+            const tickDate = new Date(tickNow);
+            updateQuotaCountdownLine(getQuotaRefreshCountdownSeconds(refreshDeadline, tickNow), process.stdout, tickDate);
           }
           continue;
         }
