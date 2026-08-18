@@ -118,18 +118,21 @@ export function formatQuotaRefreshCountdown(seconds) {
 }
 
 export function formatQuotaCountdownLine(seconds, now = new Date(), peakState = getPeakState(now), options = {}) {
-  const time = new Intl.DateTimeFormat('en-GB', {
+  const kstFormatter = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Seoul',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hourCycle: 'h23',
-  }).format(now);
+  });
+  const time = kstFormatter.format(now);
+  const kstHour = Number(kstFormatter.formatToParts(now).find(part => part.type === 'hour')?.value);
+  const icon = kstHour >= 6 && kstHour < 18 ? '☀️' : '🌙';
 
   const refreshSegment = seconds == null
     ? ''
     : ` ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
-  const line = `  ${chalk.cyan(t('quota_current_time', { time }))} ${chalk.gray('·')} ${colorizePeakStatus(peakState, formatPeakStatus(peakState))}${refreshSegment}`;
+  const line = `  ${chalk.cyan(t('quota_current_time', { time, icon }))} ${chalk.gray('·')} ${colorizePeakStatus(peakState, formatPeakStatus(peakState))}${refreshSegment}`;
   return peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive)
     ? peakBorder(line, epochSeconds(now))
     : line;

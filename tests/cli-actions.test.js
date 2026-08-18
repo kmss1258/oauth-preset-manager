@@ -79,9 +79,9 @@ test('countdown tick updates only the saved countdown line', () => {
   const output = { write: value => writes.push(value) };
   const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
 
-  assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 · ${formatPeakStatus(getPeakState(now))} · Auto-refresh in 12s`));
+  assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 🌙 · ${formatPeakStatus(getPeakState(now))} · Auto-refresh in 12s`));
   updateQuotaCountdownLine(11, output, now);
-  assert.match(writes[0], new RegExp(`${ESC}8${ESC}\\[2K\\r  Current KST 23:05:06 · .* · Auto-refresh in 11s${ESC}\\[u`));
+  assert.match(writes[0], new RegExp(`${ESC}8${ESC}\\[2K\\r  Current KST 23:05:06 🌙 · .* · Auto-refresh in 11s${ESC}\\[u`));
 });
 
 test('active peak status border rotates in TTY output and stays off otherwise', () => {
@@ -111,9 +111,23 @@ test('active peak status border rotates in TTY output and stays off otherwise', 
 test('quota status line omits refresh countdown when refresh is disabled', () => {
   const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
   const line = formatQuotaCountdownLine(null, now, getPeakState(now), { output: { isTTY: false } });
-  assert.match(line, /Current KST 23:05:06/);
+  assert.match(line, /Current KST 23:05:06 🌙/);
   assert.doesNotMatch(line, /Auto-refresh/);
   assert.doesNotMatch(line, new RegExp(`${ESC}\\[`));
+});
+
+test('KST status line uses sun and moon at exact day/night boundaries', () => {
+  const statusAt = (hour, minute) => formatQuotaCountdownLine(
+    null,
+    new Date(Date.UTC(2026, 7, 16, hour, minute)),
+    { phase: 'off' },
+    { output: { isTTY: false }, interactive: false },
+  );
+
+  assert.match(statusAt(20, 59), /Current KST 05:59:00 🌙/);
+  assert.match(statusAt(21, 0), /Current KST 06:00:00 ☀️/);
+  assert.match(statusAt(8, 59), /Current KST 17:59:00 ☀️/);
+  assert.match(statusAt(9, 0), /Current KST 18:00:00 🌙/);
 });
 
 test('peak status colors distinguish off, pre-alert, and active states', () => {
