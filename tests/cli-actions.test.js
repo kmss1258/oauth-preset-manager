@@ -64,7 +64,7 @@ test('Korean peak labels are exact and retain countdown/schedule details', () =>
   setLanguage('ko');
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), '피크 진입 주의 · 00:30:00 후 시작');
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 1, 30, 0))), '피크 모드 활성 · 02:30:00 후 종료');
-  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '피크 어림 없음 · 일정: UTC 01:00–04:00, 06:00–10:00 / KST 10:00–13:00, 15:00–19:00');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '피크 어림 없음 · 일정: UTC 01:00–04:00, 06:00–10:00 / ☀️ KST 10:00–13:00, 🏢 KST 15:00–19:00');
   setLanguage('en');
 });
 
