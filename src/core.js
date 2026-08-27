@@ -3,6 +3,8 @@ import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import https from 'https';
 import { env } from 'process';
+import { isDeepStrictEqual } from 'node:util';
+import { randomUUID } from 'node:crypto';
 
 const ANTIGRAVITY_CLIENT_ID = env.OPM_ANTIGRAVITY_CLIENT_ID?.trim() || '';
 const ANTIGRAVITY_CLIENT_SECRET = env.OPM_ANTIGRAVITY_CLIENT_SECRET?.trim() || '';
@@ -475,7 +477,11 @@ export class PresetManager {
     return results;
   }
 
-  async propagateCurrentPresetOAuth() {
+  async propagateCurrentPresetOAuth(targetNames = []) {
+    if (!Array.isArray(targetNames)) {
+      throw new TypeError('Target preset names must be an array');
+    }
+
     const sourceName = this.config?.current_preset;
     if (!sourceName) {
       throw new Error('No current preset is selected');
@@ -506,57 +512,56 @@ export class PresetManager {
       source_preset: sourceName,
       source_entries: sourceEntries.length,
       changed: [],
-      skipped: [],
-      conflicts: [],
+      unchanged: [],
     };
 
-    for (const [targetName, targetAuth] of presetData) {
-      if (targetName === sourceName) continue;
+    const selectedNames = [...new Set(targetNames)].filter(name => name !== sourceName);
+    const presetMap = new Map(presetData);
+    const unknownName = selectedNames.find(name => !presetMap.has(name));
+    if (unknownName) {
+      throw new Error(`Preset not found: ${unknownName}`);
+    }
+    const isPlainObject = value => (
+      value !== null
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+    );
+    if (!isPlainObject(source)) {
+      throw new TypeError(`Preset must be a plain object: ${sourceName}`);
+    }
+    const malformedTarget = selectedNames.find(name => !isPlainObject(presetMap.get(name)));
+    if (malformedTarget) {
+      throw new TypeError(`Preset must be a plain object: ${malformedTarget}`);
+    }
+    if (sourceEntries.length === 0) {
+      result.unchanged = selectedNames.map(preset_name => ({ preset_name }));
+      return result;
+    }
 
-      const targetIdentities = new Set(
-        Object.values(targetAuth)
-          .map(getIdentity)
-          .filter(Boolean)
-      );
-      const additions = [];
-      const skipped = [];
-      const conflicts = [];
+    for (const targetName of selectedNames) {
+      const targetAuth = presetMap.get(targetName);
+      const removedServices = Object.entries(targetAuth)
+        .filter(([service, entry]) => isPropagatable(service, entry))
+        .map(([service]) => service);
+      const nextAuth = { ...targetAuth };
+      for (const service of removedServices) delete nextAuth[service];
+      for (const [service, entry] of sourceEntries) nextAuth[service] = structuredClone(entry);
 
-      for (const [service, entry] of sourceEntries) {
-        const identity = getIdentity(entry);
-        if (targetIdentities.has(identity)) {
-          skipped.push(service);
-          continue;
-        }
-        if (Object.prototype.hasOwnProperty.call(targetAuth, service)) {
-          conflicts.push(service);
-          continue;
-        }
-        additions.push([service, structuredClone(entry)]);
-        targetIdentities.add(identity);
-      }
-
-      if (additions.length === 0) {
-        if (skipped.length > 0) result.skipped.push({ preset_name: targetName, services: skipped });
-        if (conflicts.length > 0) result.conflicts.push({ preset_name: targetName, services: conflicts });
+      if (isDeepStrictEqual(targetAuth, nextAuth)) {
+        result.unchanged.push({ preset_name: targetName });
         continue;
       }
 
-      const nextAuth = { ...targetAuth };
-      for (const [service, entry] of additions) nextAuth[service] = entry;
-
       const targetPath = join(this.presetsDir, `${targetName}.json`);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
-      const backupPath = join(this.backupsDir, `before_oauth_propagate_${targetName}_${timestamp}.json`);
+      const backupPath = join(this.backupsDir, `before_oauth_propagate_${targetName}_${Date.now()}_${randomUUID()}.json`);
       await fs.copyFile(targetPath, backupPath);
       await this._writeJsonAtomic(targetPath, nextAuth);
       result.changed.push({
         preset_name: targetName,
-        services: additions.map(([service]) => service),
+        services: [...new Set([...removedServices, ...sourceEntries.map(([service]) => service)])].sort(),
         backup_path: backupPath,
       });
-      if (skipped.length > 0) result.skipped.push({ preset_name: targetName, services: skipped });
-      if (conflicts.length > 0) result.conflicts.push({ preset_name: targetName, services: conflicts });
     }
 
     return result;

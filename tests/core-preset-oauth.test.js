@@ -1,40 +1,175 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { PresetManager } from '../src/core.js';
 
-test('propagateCurrentPresetOAuth adds missing OAuth and skips matching identities', async () => {
+async function setupPresets(presets) {
   const configDir = await mkdtemp(join(tmpdir(), 'opm-propagate-'));
-  try {
-    const manager = new PresetManager(configDir);
-    await manager.init();
-    manager.config.current_preset = 'a';
-    await manager._saveConfig();
-    await writeFile(join(manager.presetsDir, 'a.json'), JSON.stringify({
-      openai: { type: 'oauth', access: 'access-a', refresh: 'refresh-a', accountId: 'a' },
-      commandcode: { type: 'oauth', access: 'command-access', refresh: 'command-refresh' },
-      local: { type: 'api', key: 'do-not-copy' },
-    }));
-    await writeFile(join(manager.presetsDir, 'b.json'), JSON.stringify({
-      codex: { type: 'oauth', access: 'new-access', refresh: 'refresh-a' },
-      keep: { type: 'api', key: 'keep' },
-    }));
-    await writeFile(join(manager.presetsDir, 'c.json'), JSON.stringify({ keep: { type: 'api', key: 'keep' } }));
+  const manager = new PresetManager(configDir);
+  await manager.init();
+  manager.config.current_preset = 'source';
+  await manager._saveConfig();
+  for (const [name, data] of Object.entries(presets)) {
+    await writeFile(join(manager.presetsDir, `${name}.json`), JSON.stringify(data));
+  }
+  return { configDir, manager };
+}
 
-    const result = await manager.propagateCurrentPresetOAuth();
-    const b = JSON.parse(await readFile(join(manager.presetsDir, 'b.json'), 'utf8'));
-    const c = JSON.parse(await readFile(join(manager.presetsDir, 'c.json'), 'utf8'));
-    assert.deepEqual(result.changed.map(item => item.preset_name), ['b', 'c']);
-    assert.deepEqual(result.skipped[0], { preset_name: 'b', services: ['openai'] });
-    assert.deepEqual(Object.keys(b), ['codex', 'keep', 'commandcode']);
-    assert.deepEqual(Object.keys(c), ['keep', 'openai', 'commandcode']);
-    assert.equal(c.openai.refresh, 'refresh-a');
-    assert.equal(c.commandcode.refresh, 'command-refresh');
-    assert.equal(c.local, undefined);
+async function readPreset(manager, name) {
+  return JSON.parse(await readFile(join(manager.presetsDir, `${name}.json`), 'utf8'));
+}
+
+test('replaces selected eligible entries, preserves unrelated services, and excludes source', async () => {
+  const { configDir, manager } = await setupPresets({
+    source: {
+      openai: { type: 'oauth', access: 'source-access', refresh: 'source-refresh' },
+      commandcode: { type: 'oauth', access: 'command-access', refresh: 'command-refresh' },
+      local: { type: 'api', key: 'source-local' },
+    },
+    selected: {
+      openai: { type: 'oauth', access: 'old-access', refresh: 'old-refresh' },
+      codex: { type: 'oauth', access: 'old-codex', refresh: 'old-codex-refresh' },
+      keep: { type: 'api', key: 'keep' },
+    },
+    unselected: { openai: { type: 'oauth', access: 'untouched', refresh: 'untouched' } },
+  });
+  try {
+    const sourceBytes = await readFile(join(manager.presetsDir, 'source.json'), 'utf8');
+    const selectedBytes = await readFile(join(manager.presetsDir, 'selected.json'), 'utf8');
+    const result = await manager.propagateCurrentPresetOAuth(['source', 'selected', 'selected']);
+    const selected = await readPreset(manager, 'selected');
+    const unselected = await readPreset(manager, 'unselected');
+
+    assert.equal(result.source_preset, 'source');
+    assert.equal(result.source_entries, 2);
+    assert.deepEqual(result.changed.map(item => item.preset_name), ['selected']);
+    assert.deepEqual(result.changed[0].services, ['codex', 'commandcode', 'openai']);
+    assert.deepEqual(result.unchanged, []);
+    assert.deepEqual(selected, {
+      keep: { type: 'api', key: 'keep' },
+      openai: { type: 'oauth', access: 'source-access', refresh: 'source-refresh' },
+      commandcode: { type: 'oauth', access: 'command-access', refresh: 'command-refresh' },
+    });
+    assert.deepEqual(unselected, { openai: { type: 'oauth', access: 'untouched', refresh: 'untouched' } });
+    assert.equal(await readFile(result.changed[0].backup_path, 'utf8'), selectedBytes);
+    assert.equal(await readFile(join(manager.presetsDir, 'source.json'), 'utf8'), sourceBytes);
+    assert.equal((await readdir(manager.backupsDir)).some(name => name.includes('_source_')), false);
+    assert.equal((await readdir(manager.backupsDir)).length, 1);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
+});
+
+test('empty targets do nothing', async () => {
+  const { configDir, manager } = await setupPresets({ source: { openai: { type: 'oauth', refresh: 'r' } }, target: { keep: { type: 'api' } } });
+  try {
+    const before = await readPreset(manager, 'target');
+    const result = await manager.propagateCurrentPresetOAuth([]);
+    assert.deepEqual(result.changed, []);
+    assert.deepEqual(result.unchanged, []);
+    assert.deepEqual(await readPreset(manager, 'target'), before);
+    assert.deepEqual(await readdir(manager.backupsDir), []);
+  } finally { await rm(configDir, { recursive: true, force: true }); }
+});
+
+test('zero eligible source entries clears nothing', async () => {
+  const { configDir, manager } = await setupPresets({ source: { local: { type: 'api' } }, target: { openai: { type: 'oauth', refresh: 'old' }, keep: { type: 'api' } } });
+  try {
+    const before = await readPreset(manager, 'target');
+    const result = await manager.propagateCurrentPresetOAuth(['target']);
+    assert.equal(result.source_entries, 0);
+    assert.deepEqual(result.changed, []);
+    assert.deepEqual(result.unchanged, [{ preset_name: 'target' }]);
+    assert.deepEqual(await readPreset(manager, 'target'), before);
+    assert.deepEqual(await readdir(manager.backupsDir), []);
+  } finally { await rm(configDir, { recursive: true, force: true }); }
+});
+
+test('identical replacement skips backup and write', async () => {
+  const { configDir, manager } = await setupPresets({
+    source: { openai: { type: 'oauth', refresh: 'same' }, keep: { type: 'api' } },
+    target: { openai: { type: 'oauth', refresh: 'same' }, keep: { type: 'api' } },
+  });
+  try {
+    const result = await manager.propagateCurrentPresetOAuth(['target']);
+    assert.deepEqual(result.changed, []);
+    assert.deepEqual(result.unchanged, [{ preset_name: 'target' }]);
+    assert.deepEqual(await readdir(manager.backupsDir), []);
+  } finally { await rm(configDir, { recursive: true, force: true }); }
+});
+
+test('unknown targets are validated before any writes', async () => {
+  const { configDir, manager } = await setupPresets({ source: { openai: { type: 'oauth', refresh: 'new' } }, target: { openai: { type: 'oauth', refresh: 'old' } } });
+  try {
+    await assert.rejects(manager.propagateCurrentPresetOAuth(['target', 'missing']), /Preset not found: missing/);
+    assert.equal((await readPreset(manager, 'target')).openai.refresh, 'old');
+    assert.deepEqual(await readdir(manager.backupsDir), []);
+  } finally { await rm(configDir, { recursive: true, force: true }); }
+});
+
+test('rejects non-array targets', async () => {
+  const { configDir, manager } = await setupPresets({ source: { openai: { type: 'oauth', refresh: 'new' } } });
+  try { await assert.rejects(manager.propagateCurrentPresetOAuth('target'), /must be an array/); }
+  finally { await rm(configDir, { recursive: true, force: true }); }
+});
+
+test('rejects array-shaped source or target before writes and preserves active auth/config', async () => {
+  for (const presets of [
+    { source: [], target: { openai: { type: 'oauth', refresh: 'old' } } },
+    { source: { openai: { type: 'oauth', refresh: 'new' } }, target: [] },
+  ]) {
+    const { configDir, manager } = await setupPresets(presets);
+    try {
+      const activePath = join(configDir, 'active-auth.json');
+      await writeFile(activePath, '{"active":true}');
+      await manager.setAuthPath(activePath);
+      const activeBytes = await readFile(activePath, 'utf8');
+      const configBytes = await readFile(manager.configFile, 'utf8');
+      await assert.rejects(manager.propagateCurrentPresetOAuth(['target']), /plain object/);
+      assert.equal(await readFile(activePath, 'utf8'), activeBytes);
+      assert.equal(await readFile(manager.configFile, 'utf8'), configBytes);
+      assert.deepEqual(await readdir(manager.backupsDir), []);
+    } finally { await rm(configDir, { recursive: true, force: true }); }
+  }
+});
+
+test('keeps target unchanged when atomic write fails and retains exact backup', async () => {
+  const { configDir, manager } = await setupPresets({
+    source: { openai: { type: 'oauth', refresh: 'new' } },
+    target: { openai: { type: 'oauth', refresh: 'old' }, keep: { type: 'api' } },
+  });
+  try {
+    const activePath = join(configDir, 'active-auth.json');
+    await writeFile(activePath, '{"active":true}');
+    await manager.setAuthPath(activePath);
+    const targetBytes = await readFile(join(manager.presetsDir, 'target.json'), 'utf8');
+    const activeBytes = await readFile(activePath, 'utf8');
+    const configBytes = await readFile(manager.configFile, 'utf8');
+    manager._writeJsonAtomic = async () => { throw new Error('injected write failure'); };
+
+    await assert.rejects(manager.propagateCurrentPresetOAuth(['target']), /injected write failure/);
+    const backups = await readdir(manager.backupsDir);
+    assert.equal(backups.length, 1);
+    assert.equal(await readFile(join(manager.backupsDir, backups[0]), 'utf8'), targetBytes);
+    assert.equal(await readFile(join(manager.presetsDir, 'target.json'), 'utf8'), targetBytes);
+    assert.equal(await readFile(activePath, 'utf8'), activeBytes);
+    assert.equal(await readFile(manager.configFile, 'utf8'), configBytes);
+  } finally { await rm(configDir, { recursive: true, force: true }); }
+});
+
+test('repeated overwrites use distinct backup paths', async () => {
+  const { configDir, manager } = await setupPresets({
+    source: { openai: { type: 'oauth', refresh: 'new' } },
+    target: { openai: { type: 'oauth', refresh: 'old' } },
+  });
+  try {
+    const first = await manager.propagateCurrentPresetOAuth(['target']);
+    await writeFile(join(manager.presetsDir, 'target.json'), JSON.stringify({ openai: { type: 'oauth', refresh: 'old-again' } }));
+    const second = await manager.propagateCurrentPresetOAuth(['target']);
+    assert.notEqual(first.changed[0].backup_path, second.changed[0].backup_path);
+    assert.equal((await readdir(manager.backupsDir)).length, 2);
+  } finally { await rm(configDir, { recursive: true, force: true }); }
 });
