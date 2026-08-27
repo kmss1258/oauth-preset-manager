@@ -32,11 +32,11 @@ opm
   - Visual progress bars and reset timers.
   - `opm q` refreshes automatically every 60 seconds and shows the next-refresh countdown above the table.
   - Press `r` or `ㄱ` in `opm q` to refresh immediately without changing the current quota layout.
-  - Shows peak periods in KST (10:00–13:00 and 15:00–19:00), with a `HH:MM:SS` countdown one hour before and throughout each peak window. Active peaks use a rotating pastel border in interactive terminals.
+  - Shows fixed UTC peak periods Monday-Friday only (01:00–04:00 and 06:00–10:00 UTC; 10:00–13:00 and 15:00–19:00 KST), with a `HH:MM:SS` countdown one hour before and throughout each peak window. Weekends are off. Active peaks use a rotating pastel border in interactive terminals.
 - **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
 - **Interactive CLI**: Beautiful interactive prompts with arrow key navigation.
 - Includes an OpenAI-only interactive menu action that sends one `gpt-5.6-luna` request across saved OpenAI OAuth targets to kick quota back into motion after reset.
-- Includes a menu action to propagate missing OAuth entries from the current preset to other presets without overwriting existing credentials.
+- Includes a menu action to select presets and replace their eligible OAuth/Command Code credentials from the current preset while preserving unrelated services.
 - **Multi-language**: English & Korean support (auto-detected).
 
 ## 🚀 Installation
@@ -87,7 +87,7 @@ opm q
 > Shows usage for all presets + currently active Antigravity session.
 > Renders a Rich table with provider, quota, reset, account, preset, and error columns.
 > The interactive quota screen refreshes automatically every 60 seconds and shows the next refresh above the table. Press `r` or `ㄱ` to refresh immediately.
-> Peak periods are 01:00–04:00 UTC / 10:00–13:00 KST and 06:00–10:00 UTC / 15:00–19:00 KST. The peak countdown starts one hour before each period and uses `HH:MM:SS`; the pastel border is only shown during active peaks in TTY mode.
+> Peak periods are fixed Monday-Friday schedules: 01:00–04:00 UTC / 10:00–13:00 KST and 06:00–10:00 UTC / 15:00–19:00 KST. Weekends are off. The peak countdown starts one hour before each period and uses `HH:MM:SS`; the pastel border is only shown during active peaks in TTY mode.
 
 **Save Current Auth:**
 ```bash
