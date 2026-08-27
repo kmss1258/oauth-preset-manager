@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, propagateOAuthInteractive, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
 
 const ESC = String.fromCharCode(27);
@@ -14,6 +14,100 @@ test('interactive choices include the OpenAI kickoff action', () => {
 
   assert.ok(values.includes('__openai_kickoff__'));
   assert.ok(values.includes('__propagate_oauth__'));
+});
+
+test('affected menu actions render exactly one icon in Korean and English', () => {
+  const actions = [
+    ['__save__', '💾'],
+    ['__view__', '📝'],
+    ['__quota__', '📊'],
+    ['__delete__', '🗑️'],
+    ['__exit__', '❌'],
+  ];
+  for (const language of ['ko', 'en']) {
+    setLanguage(language);
+    const choices = buildInteractiveChoices([]);
+    for (const [value, icon] of actions) {
+      const choice = choices.find(item => item?.value === value);
+      assert.equal((choice.name.match(new RegExp(icon, 'g')) || []).length, 1, `${language} ${value}`);
+    }
+  }
+  setLanguage('en');
+});
+
+test('OAuth propagation filters destinations, confirms named choices, and passes selection', async () => {
+  setLanguage('en');
+  const calls = [];
+  const manager = {
+    config: { current_preset: 'source' },
+    listPresets: async () => [{ name: 'source' }, { name: 'target-a' }, { name: 'target-b' }],
+    propagateCurrentPresetOAuth: async names => { calls.push(names); return { changed: [], unchanged: names.map(preset_name => ({ preset_name })) }; },
+  };
+  await propagateOAuthInteractive(manager, {
+    checkbox: async options => { calls.push(options.choices.map(choice => choice.value)); return ['target-b']; },
+    confirm: async options => { calls.push(options); return true; },
+  });
+  assert.deepEqual(calls[0], ['target-a', 'target-b']);
+  assert.match(calls[1].message, /in 'target-b' with those from current preset 'source'/);
+  assert.doesNotMatch(calls[1].message, /in 'source',/);
+  assert.equal(calls[1].default, false);
+  assert.deepEqual(calls[2], ['target-b']);
+});
+
+test('OAuth propagation warns when the source has no eligible credentials', async () => {
+  let coreCalled = false;
+  const originalLog = console.log;
+  const output = [];
+  console.log = value => output.push(String(value));
+  try {
+    await propagateOAuthInteractive({
+      config: { current_preset: 'source' },
+      listPresets: async () => [{ name: 'source' }, { name: 'target' }],
+      propagateCurrentPresetOAuth: async names => {
+        coreCalled = true;
+        assert.deepEqual(names, ['target']);
+        return { source_entries: 0, changed: [], unchanged: [{ preset_name: 'target' }] };
+      },
+    }, { checkbox: async () => ['target'], confirm: async () => true });
+  } finally {
+    console.log = originalLog;
+  }
+  assert.equal(coreCalled, true);
+  assert.ok(output.some(line => line.includes('no eligible OAuth/Command Code credentials')));
+});
+
+test('OAuth propagation does not confirm or call core for empty selection', async () => {
+  let coreCalled = false;
+  let confirmCalled = false;
+  await propagateOAuthInteractive({
+    config: { current_preset: 'source' },
+    listPresets: async () => [{ name: 'source' }, { name: 'target' }],
+    propagateCurrentPresetOAuth: async () => { coreCalled = true; },
+  }, {
+    checkbox: async () => [],
+    confirm: async () => { confirmCalled = true; return true; },
+  });
+  assert.equal(coreCalled, false);
+  assert.equal(confirmCalled, false);
+});
+
+test('OAuth propagation is a no-op with no destinations', async () => {
+  let checkboxCalled = false;
+  await propagateOAuthInteractive({
+    config: { current_preset: 'source' },
+    listPresets: async () => [{ name: 'source' }],
+  }, { checkbox: async () => { checkboxCalled = true; return []; } });
+  assert.equal(checkboxCalled, false);
+});
+
+test('OAuth propagation rejection does not call core', async () => {
+  let coreCalled = false;
+  await propagateOAuthInteractive({
+    config: { current_preset: 'source' },
+    listPresets: async () => [{ name: 'source' }, { name: 'target' }],
+    propagateCurrentPresetOAuth: async () => { coreCalled = true; },
+  }, { checkbox: async () => ['target'], confirm: async () => false });
+  assert.equal(coreCalled, false);
 });
 
 test('quota key normalization accepts ㄱ as refresh', () => {
@@ -46,17 +140,27 @@ test('quota countdown is translated in English and Korean', () => {
   setLanguage('en');
 });
 
-test('peak state uses UTC daily boundaries and exposes the KST schedule', () => {
-  const before = getPeakState(Date.UTC(2026, 7, 17, 0, 0, 0));
-  assert.equal(before.phase, 'pre-alert');
-  assert.equal(before.secondsRemaining, 3600);
-
-  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 1, 0, 0)).phase, 'active');
-  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 4, 0, 0)).phase, 'off');
-  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 5, 0, 0)).phase, 'pre-alert');
-  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 6, 0, 0)).phase, 'active');
-  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 10, 0, 0)).phase, 'off');
-  assert.equal(getPeakState(Date.UTC(2026, 7, 17, 15, 0, 0)).phase, 'off');
+test('peak state follows fixed UTC weekday windows and Monday rollover', () => {
+  const cases = [
+    [Date.UTC(2026, 7, 17, 0, 0, 0), 'pre-alert', 3600],
+    [Date.UTC(2026, 7, 17, 1, 0, 0), 'active'],
+    [Date.UTC(2026, 7, 17, 4, 0, 0), 'off'],
+    [Date.UTC(2026, 7, 17, 5, 0, 0), 'pre-alert', 3600],
+    [Date.UTC(2026, 7, 17, 6, 0, 0), 'active'],
+    [Date.UTC(2026, 7, 17, 10, 0, 0), 'off'],
+    [Date.UTC(2026, 7, 21, 10, 0, 0), 'off'],
+    [Date.UTC(2026, 7, 22, 12, 0, 0), 'off'],
+    [Date.UTC(2026, 7, 23, 12, 0, 0), 'off'],
+    [Date.UTC(2026, 7, 23, 23, 59, 59), 'off'],
+    [Date.UTC(2026, 7, 24, 0, 0, 0), 'pre-alert', 3600],
+    [Date.UTC(2026, 7, 24, 1, 0, 0), 'active'],
+  ];
+  for (const [timestamp, phase, secondsRemaining] of cases) {
+    const state = getPeakState(timestamp);
+    assert.equal(state.phase, phase, new Date(timestamp).toISOString());
+    if (secondsRemaining === undefined) continue;
+    assert.equal(state.secondsRemaining, secondsRemaining);
+  }
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), 'Peak entry warning · starts in 00:30:00');
 });
 
@@ -64,7 +168,7 @@ test('Korean peak labels are exact and retain countdown/schedule details', () =>
   setLanguage('ko');
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), '피크 진입 주의 · 00:30:00 후 시작');
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 1, 30, 0))), '피크 모드 활성 · 02:30:00 후 종료');
-  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '피크 어림 없음 · 일정: UTC 01:00–04:00, 06:00–10:00 / ☀️ KST 10:00–13:00, 🏢 KST 15:00–19:00');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '피크 어림 없음 · 평일(월–금)만: UTC 01:00–04:00, 06:00–10:00 / ☀️ KST 10:00–13:00, 🏢 KST 15:00–19:00 · 주말 휴무');
   setLanguage('en');
 });
 

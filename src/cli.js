@@ -59,17 +59,26 @@ function epochSeconds(value) {
 
 export function getPeakState(value = Date.now()) {
   const seconds = epochSeconds(value);
+  const date = new Date(seconds * 1000);
   const daySecond = ((seconds % UTC_DAY_SECONDS) + UTC_DAY_SECONDS) % UTC_DAY_SECONDS;
-  const activeWindow = PEAK_WINDOWS.find(window => daySecond >= window.start && daySecond < window.end);
+  const weekday = date.getUTCDay();
+  const isWeekday = day => day >= 1 && day <= 5;
+  const activeWindow = isWeekday(weekday)
+    ? PEAK_WINDOWS.find(window => daySecond >= window.start && daySecond < window.end)
+    : null;
   if (activeWindow) {
     return { phase: 'active', secondsRemaining: activeWindow.end - daySecond, window: activeWindow };
   }
 
-  const nextWindow = PEAK_WINDOWS.find(window => daySecond < window.start);
-  const upcoming = nextWindow || PEAK_WINDOWS[0];
-  const start = nextWindow ? upcoming.start : upcoming.start + UTC_DAY_SECONDS;
-  if (start - daySecond <= 60 * 60) {
-    return { phase: 'pre-alert', secondsRemaining: start - daySecond, window: upcoming };
+  for (let dayOffset = 0; dayOffset <= 7; dayOffset++) {
+    const candidateWeekday = (weekday + dayOffset) % 7;
+    if (!isWeekday(candidateWeekday)) continue;
+    for (const window of PEAK_WINDOWS) {
+      const secondsUntil = dayOffset * UTC_DAY_SECONDS + window.start - daySecond;
+      if (secondsUntil > 0 && secondsUntil <= 60 * 60) {
+        return { phase: 'pre-alert', secondsRemaining: secondsUntil, window };
+      }
+    }
   }
 
   return { phase: 'off', secondsRemaining: null, window: null };
@@ -189,7 +198,7 @@ export function buildInteractiveChoices(presets) {
     {
       name: `  ${chalk.cyan('🔗')} ${t('propagate_oauth')}`,
       value: '__propagate_oauth__',
-      description: 'Copy missing OAuth credentials from the current preset'
+      description: 'Replace selected preset OAuth/Command Code credentials from the current preset'
     },
     {
       name: `  ${chalk.yellow('🗑️')} ${t('delete_preset')}`,
@@ -1136,7 +1145,7 @@ async function deletePresetInteractive(manager, presets) {
   }
 }
 
-async function propagateOAuthInteractive(manager) {
+export async function propagateOAuthInteractive(manager, prompts = { checkbox, confirm }) {
   console.clear();
   printHeader();
   const source = manager.config?.current_preset;
@@ -1145,22 +1154,41 @@ async function propagateOAuthInteractive(manager) {
     return;
   }
 
-  const confirmed = await confirm({
-    message: chalk.cyan(`  ${t('oauth_propagate_confirm', { name: source })}`),
+  const destinations = (await manager.listPresets())
+    .map(preset => preset.name)
+    .filter(name => name !== source);
+  if (destinations.length === 0) {
+    console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_destinations')}`));
+    return;
+  }
+
+  const selected = await prompts.checkbox({
+    message: chalk.cyan(`  ${t('oauth_propagate_select_targets')}`),
+    choices: destinations.map(name => ({ name, value: name })),
+  });
+  if (!selected?.length) {
+    console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_selection')}`));
+    return;
+  }
+
+  const confirmed = await prompts.confirm({
+    message: chalk.yellow(`  ${t('oauth_propagate_confirm', { source, targets: selected.join(', ') })}`),
     default: false,
   });
   if (!confirmed) return;
 
   try {
-    const result = await manager.propagateCurrentPresetOAuth();
+    const result = await manager.propagateCurrentPresetOAuth(selected);
+    if (result.source_entries === 0) {
+      console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_eligible_source')}`));
+      return;
+    }
     const changed = result.changed.length;
-    const skipped = result.skipped.reduce((total, item) => total + item.services.length, 0);
-    const conflicts = result.conflicts.reduce((total, item) => total + item.services.length, 0);
+    const unchanged = result.unchanged.length;
     printInfoBox('✓ Success', [
       t('oauth_propagate_complete'),
       `${t('oauth_propagate_changed')}: ${changed}`,
-      `${t('oauth_propagate_skipped')}: ${skipped}`,
-      `${t('oauth_propagate_conflicts')}: ${conflicts}`,
+      `${t('oauth_propagate_unchanged')}: ${unchanged}`,
     ]);
   } catch (error) {
     console.log(chalk.red(`  ✗ ${t('error')}: ${error.message}`));
