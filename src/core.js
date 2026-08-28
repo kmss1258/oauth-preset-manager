@@ -18,6 +18,24 @@ const COMMAND_CODE_API_URL = 'https://api.commandcode.ai/alpha';
 const OPENAI_KICKOFF_MODEL = 'gpt-5.6-luna';
 const OPENAI_KICKOFF_INPUT = 'Reply with exactly OK.';
 
+function isPlainObject(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function validatePresetName(name) {
+  const hasControlCharacter = typeof name === 'string' && Array.from(name).some(character => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+  });
+  if (typeof name !== 'string' || !name.trim() || name === '.' || name === '..' || name.includes('\0') || name.includes('/') || name.includes('\\') || hasControlCharacter) {
+    throw new TypeError('Preset name contains unsafe characters');
+  }
+  return name;
+}
+
 function normalizePlanType(value) {
   return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
 }
@@ -77,6 +95,7 @@ export class PresetManager {
     this.configDir = configDir || join(homedir(), '.config', 'oauth-preset-manager');
     this.presetsDir = join(this.configDir, 'presets');
     this.backupsDir = join(this.configDir, 'backups');
+    this.sidecarsDir = join(this.configDir, 'preset-sidecars', 'opencode-go');
     this.configFile = join(this.configDir, 'config.json');
     this.quotaCacheFile = join(this.configDir, 'quota-cache.json');
     this.openCodeGoConfigFile = join(this.configDir, 'opencode-go.json');
@@ -89,6 +108,15 @@ export class PresetManager {
   async init() {
     await fs.mkdir(this.presetsDir, { recursive: true });
     await fs.mkdir(this.backupsDir, { recursive: true });
+    await fs.mkdir(this.sidecarsDir, { recursive: true, mode: 0o700 });
+    await fs.chmod(join(this.configDir, 'preset-sidecars'), 0o700);
+    await fs.chmod(this.sidecarsDir, 0o700);
+    await fs.chmod(this.presetsDir, 0o700);
+    await fs.chmod(this.backupsDir, 0o700);
+    try {
+      const globalStat = await fs.lstat(this.openCodeGoConfigFile);
+      if (globalStat.isFile()) await fs.chmod(this.openCodeGoConfigFile, 0o600);
+    } catch {}
     this.config = await this._loadConfig();
     this.quotaCache = await this._loadQuotaCache();
     await this._normalizeAuthPath();
@@ -139,7 +167,8 @@ export class PresetManager {
   }
 
   async _saveConfig() {
-    await fs.writeFile(this.configFile, JSON.stringify(this.config, null, 2));
+    await fs.writeFile(this.configFile, JSON.stringify(this.config, null, 2), { mode: 0o600 });
+    await fs.chmod(this.configFile, 0o600);
   }
 
   async _loadQuotaCache() {
@@ -185,6 +214,7 @@ export class PresetManager {
     const backupPath = join(this.backupsDir, backupName);
 
     await fs.copyFile(authPath, backupPath);
+    await fs.chmod(backupPath, 0o600);
 
     try {
       const files = await fs.readdir(this.backupsDir);
@@ -204,6 +234,7 @@ export class PresetManager {
   }
 
   async savePreset(name, description = '', watchedServices = null) {
+    validatePresetName(name);
     const authPath = this.getAuthPath();
     
     try {
@@ -212,27 +243,35 @@ export class PresetManager {
       throw new Error(`Auth file not found: ${authPath}`);
     }
 
-    const authData = JSON.parse(await fs.readFile(authPath, 'utf-8'));
+    const authBytes = await fs.readFile(authPath);
+    const authData = JSON.parse(authBytes.toString('utf8'));
     const presetPath = join(this.presetsDir, `${name}.json`);
-    await fs.copyFile(authPath, presetPath);
-
-    const services = Object.keys(authData);
-    const now = new Date().toISOString();
-
-    if (watchedServices === null) {
-      watchedServices = ['openai'];
+    const session = await this._readStoredOpenCodeGoSession();
+    const sidecarPath = this._sidecarPath(name);
+    const previous = await this._captureFileState([presetPath, this.configFile]);
+    previous[sidecarPath] = { bytes: await this._readSafeSidecarBytes(sidecarPath) };
+    const oldConfig = structuredClone(this.config);
+    let sidecarBackupPath = null;
+    try {
+      await this._writeBytesAtomic(presetPath, authBytes);
+      // Missing or malformed global Go data is not an explicit session-clear action; preserve an existing sidecar.
+      if (session) {
+        if (previous[sidecarPath].bytes && !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) {
+          sidecarBackupPath = await this._writePrivateBackup(`before_preset_${name}_opencode-go`, previous[sidecarPath].bytes);
+        }
+        if (!previous[sidecarPath].bytes || !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) await this._writeJsonAtomic(sidecarPath, session);
+      }
+      const services = Object.keys(authData);
+      const now = new Date().toISOString();
+      if (watchedServices === null) watchedServices = ['openai'];
+      this.config.presets[name] = { created_at: now, last_used: now, description, services, watched_services: watchedServices };
+      this.config.current_preset = name;
+      await this._saveConfig();
+    } catch (error) {
+      await this._restoreFileState(previous);
+      this.config = oldConfig;
+      throw error;
     }
-
-    this.config.presets[name] = {
-      created_at: now,
-      last_used: now,
-      description,
-      services,
-      watched_services: watchedServices,
-    };
-    this.config.current_preset = name;
-    await this._saveConfig();
-
     return true;
   }
 
@@ -257,6 +296,7 @@ export class PresetManager {
   }
 
   async switchPreset(name, autoBackup = true) {
+    validatePresetName(name);
     const presetPath = join(this.presetsDir, `${name}.json`);
     
     try {
@@ -275,6 +315,8 @@ export class PresetManager {
     } catch {}
 
     const newAuth = JSON.parse(await fs.readFile(presetPath, 'utf-8'));
+    const sidecar = await this._readSidecar(name);
+    if (sidecar.error) throw sidecar.error;
     const diff = this._computeAuthDiff(oldAuth, newAuth);
 
     let backupPath = null;
@@ -286,15 +328,30 @@ export class PresetManager {
       } catch {}
     }
 
-    await fs.mkdir(dirname(authPath), { recursive: true });
-    await fs.copyFile(presetPath, authPath);
+    const oldAuthBytes = await fs.readFile(authPath).catch(() => null);
+    const oldGoBytes = await this._readSafeGlobalBytes();
+    const oldConfigBytes = await fs.readFile(this.configFile).catch(() => null);
+    const oldConfig = structuredClone(this.config);
+    try {
+      await fs.mkdir(dirname(authPath), { recursive: true });
+      await fs.copyFile(presetPath, authPath);
+      await fs.chmod(authPath, 0o600);
+      if (sidecar.value) await this._writeJsonAtomic(this.openCodeGoConfigFile, sidecar.value);
 
-    const now = new Date().toISOString();
-    if (this.config.presets[name]) {
-      this.config.presets[name].last_used = now;
+      const now = new Date().toISOString();
+      if (this.config.presets[name]) this.config.presets[name].last_used = now;
+      this.config.current_preset = name;
+      await this._saveConfig();
+    } catch (error) {
+      if (oldAuthBytes === null) await fs.unlink(authPath).catch(() => {});
+      else await this._writeBytesAtomic(authPath, oldAuthBytes);
+      if (oldGoBytes === null) await fs.unlink(this.openCodeGoConfigFile).catch(() => {});
+      else await this._writeBytesAtomic(this.openCodeGoConfigFile, oldGoBytes);
+      if (oldConfigBytes === null) await fs.unlink(this.configFile).catch(() => {});
+      else await this._writeBytesAtomic(this.configFile, oldConfigBytes);
+      this.config = oldConfig;
+      throw error;
     }
-    this.config.current_preset = name;
-    await this._saveConfig();
 
     return {
       success: true,
@@ -307,6 +364,7 @@ export class PresetManager {
   }
 
   async overwritePresetFromCurrent(name, autoBackup = true) {
+    validatePresetName(name);
     const presetPath = join(this.presetsDir, `${name}.json`);
 
     try {
@@ -322,27 +380,43 @@ export class PresetManager {
       throw new Error(`Auth file not found: ${authPath}`);
     }
 
+    const authBytes = await fs.readFile(authPath);
+    const session = await this._readStoredOpenCodeGoSession();
+    const sidecarPath = this._sidecarPath(name);
+    const previous = await this._captureFileState([presetPath, this.configFile]);
+    previous[sidecarPath] = { bytes: await this._readSafeSidecarBytes(sidecarPath) };
+    const oldConfig = structuredClone(this.config);
     let backupPath = null;
+    let sidecarBackupPath = null;
     if (autoBackup) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
       backupPath = join(this.backupsDir, `preset_${name}_${timestamp}.json`);
       await fs.copyFile(presetPath, backupPath);
+      await fs.chmod(backupPath, 0o600);
     }
 
-    await fs.copyFile(authPath, presetPath);
-
-    const now = new Date().toISOString();
-    if (this.config.presets[name]) {
-      this.config.presets[name].last_used = now;
+    try {
+      await this._writeBytesAtomic(presetPath, authBytes);
+      if (session) {
+        if (previous[sidecarPath].bytes && !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) sidecarBackupPath = await this._writePrivateBackup(`before_preset_${name}_opencode-go`, previous[sidecarPath].bytes);
+        if (!previous[sidecarPath].bytes || !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) await this._writeJsonAtomic(sidecarPath, session);
+      }
+      const now = new Date().toISOString();
+      if (this.config.presets[name]) this.config.presets[name].last_used = now;
+      this.config.current_preset = name;
+      await this._saveConfig();
+    } catch (error) {
+      await this._restoreFileState(previous);
+      this.config = oldConfig;
+      throw error;
     }
-    this.config.current_preset = name;
-    await this._saveConfig();
 
     return {
       success: true,
       preset_name: name,
       preset_path: presetPath,
       backup_path: backupPath,
+      sidecar_backup_path: sidecarBackupPath,
     };
   }
 
@@ -399,6 +473,7 @@ export class PresetManager {
   }
 
   async deletePreset(name) {
+    validatePresetName(name);
     const presetPath = join(this.presetsDir, `${name}.json`);
     
     try {
@@ -408,6 +483,7 @@ export class PresetManager {
     }
 
     await fs.unlink(presetPath);
+    await fs.unlink(this._sidecarPath(name)).catch(() => {});
 
     if (this.config.presets[name]) {
       delete this.config.presets[name];
@@ -447,8 +523,17 @@ export class PresetManager {
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
         const presetAuth = JSON.parse(await fs.readFile(join(this.presetsDir, file), 'utf-8'));
-        if (JSON.stringify(currentAuth) === JSON.stringify(presetAuth)) {
+        const name = file.slice(0, -5);
+        if (!isDeepStrictEqual(currentAuth, presetAuth)) continue;
+        if (env.OPENCODE_GO_WORKSPACE_ID?.trim() || env.OPENCODE_GO_AUTH_COOKIE?.trim()) {
           return file.slice(0, -5);
+        }
+        const sidecar = await this._readSidecar(name);
+        if (!sidecar.error && sidecar.value) {
+          const currentSession = await this._readStoredOpenCodeGoSession();
+          if (currentSession && isDeepStrictEqual(currentSession, sidecar.value)) return name;
+        } else if (!sidecar.error && !sidecar.exists) {
+          return name;
         }
       } catch {}
     }
@@ -477,105 +562,235 @@ export class PresetManager {
     return results;
   }
 
-  async propagateCurrentPresetOAuth(targetNames = []) {
-    if (!Array.isArray(targetNames)) {
-      throw new TypeError('Target preset names must be an array');
-    }
-
+  async getCurrentPresetCredentialOptions() {
     const sourceName = this.config?.current_preset;
     if (!sourceName) {
       throw new Error('No current preset is selected');
     }
+    validatePresetName(sourceName);
+    const sourcePath = join(this.presetsDir, `${sourceName}.json`);
+    let source;
+    try { source = JSON.parse(await fs.readFile(sourcePath, 'utf8')); } catch { throw new Error(`Preset not found: ${sourceName}`); }
+    if (!isPlainObject(source)) throw new TypeError(`Preset must be a plain object: ${sourceName}`);
+    const options = Object.entries(source).map(([service, entry]) => {
+      const type = entry && typeof entry === 'object' && typeof entry.type === 'string' && entry.type.trim()
+        ? entry.type.trim().toLowerCase() : 'unknown';
+      const suffix = service === 'google' && type === 'oauth' ? ' (Gemini/Google)' : '';
+      return { authServiceKey: service, service, type, label: `${service}:${type}${suffix}` };
+    });
+    const session = await this._readStoredOpenCodeGoSession();
+    if (session) options.push({
+      authServiceKey: null,
+      service: 'opencode-go',
+      type: 'oauth-session',
+      label: 'OpenCode Go OAuth session',
+      description: 'Browser/usage session',
+    });
+    return options;
+  }
 
-    const presetData = await this.listPresetAuthData();
-    const source = presetData.find(([name]) => name === sourceName)?.[1];
-    if (!source) {
-      throw new Error(`Preset not found: ${sourceName}`);
+  async distributeCurrentPresetCredentials({ authServiceKeys = [], includeOpenCodeGoSession = false, targetNames = [] } = {}) {
+    if (typeof includeOpenCodeGoSession !== 'boolean') throw new TypeError('includeOpenCodeGoSession must be a boolean');
+    if (!Array.isArray(authServiceKeys) || !Array.isArray(targetNames)) throw new TypeError('Credential keys and target names must be arrays');
+    const sourceName = this.config?.current_preset;
+    if (!sourceName) throw new Error('No current preset is selected');
+    validatePresetName(sourceName);
+    const sourcePath = join(this.presetsDir, `${sourceName}.json`);
+    const source = JSON.parse(await fs.readFile(sourcePath, 'utf8'));
+    if (!isPlainObject(source)) throw new TypeError(`Preset must be a plain object: ${sourceName}`);
+    const keys = [...new Set(authServiceKeys)];
+    if (keys.some(key => typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(source, key))) {
+      const invalidKey = keys.find(key => typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(source, key));
+      throw new Error(`Credential not found: ${String(invalidKey)}`);
     }
-
-    const getIdentity = (entry) => {
-      if (!entry || typeof entry !== 'object') return null;
-      return entry.refresh || entry.access || entry.key || null;
-    };
-    const isPropagatable = (service, entry) => (
-      entry
-      && typeof entry === 'object'
-      && (entry.type === 'oauth' || (
-        ['command-code', 'commandcode'].includes(service)
-        && (entry.key || entry.access || entry.refresh)
-      ))
-      && Boolean(getIdentity(entry))
-    );
-    const sourceEntries = Object.entries(source)
-      .filter(([service, entry]) => isPropagatable(service, entry));
+    const session = includeOpenCodeGoSession ? await this._readStoredOpenCodeGoSession() : null;
+    if (includeOpenCodeGoSession && !session) throw new Error('Stored OpenCode Go session is missing or malformed');
+    const presetData = await this.listPresetAuthData();
     const result = {
       source_preset: sourceName,
-      source_entries: sourceEntries.length,
+      source_entries: keys.length + (includeOpenCodeGoSession ? 1 : 0),
       changed: [],
       unchanged: [],
+      source_sidecar_changed: false,
+      source_sidecar_backup_path: null,
     };
 
     const selectedNames = [...new Set(targetNames)].filter(name => name !== sourceName);
+    selectedNames.forEach(validatePresetName);
     const presetMap = new Map(presetData);
     const unknownName = selectedNames.find(name => !presetMap.has(name));
     if (unknownName) {
       throw new Error(`Preset not found: ${unknownName}`);
     }
-    const isPlainObject = value => (
-      value !== null
-      && typeof value === 'object'
-      && !Array.isArray(value)
-      && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
-    );
-    if (!isPlainObject(source)) {
-      throw new TypeError(`Preset must be a plain object: ${sourceName}`);
-    }
     const malformedTarget = selectedNames.find(name => !isPlainObject(presetMap.get(name)));
     if (malformedTarget) {
       throw new TypeError(`Preset must be a plain object: ${malformedTarget}`);
     }
-    if (sourceEntries.length === 0) {
+    const sourceSidecarPath = this._sidecarPath(sourceName);
+    const fileState = {};
+    const sourceSidecarBytes = await this._readSafeSidecarBytes(sourceSidecarPath);
+    fileState[sourceSidecarPath] = { bytes: sourceSidecarBytes };
+    const plans = [];
+    for (const targetName of selectedNames) {
+      const targetPath = join(this.presetsDir, `${targetName}.json`);
+      const sidecarPath = this._sidecarPath(targetName);
+      const targetBytes = await fs.readFile(targetPath);
+      const sidecarBytes = await this._readSafeSidecarBytes(sidecarPath);
+      fileState[targetPath] = { bytes: targetBytes };
+      fileState[sidecarPath] = { bytes: sidecarBytes };
+      const targetAuth = presetMap.get(targetName);
+      const nextAuth = structuredClone(targetAuth);
+      for (const key of keys) nextAuth[key] = structuredClone(source[key]);
+      plans.push({ targetName, targetPath, sidecarPath, targetAuth, nextAuth, sidecarBytes,
+        authChanged: !isDeepStrictEqual(targetAuth, nextAuth),
+        sidecarChanged: Boolean(session) && (!sidecarBytes || !isDeepStrictEqual(await this._parseSessionBytes(sidecarBytes), session)) });
+    }
+
+    if (keys.length === 0 && !includeOpenCodeGoSession) {
       result.unchanged = selectedNames.map(preset_name => ({ preset_name }));
       return result;
     }
 
-    for (const targetName of selectedNames) {
-      const targetAuth = presetMap.get(targetName);
-      const removedServices = Object.entries(targetAuth)
-        .filter(([service, entry]) => isPropagatable(service, entry))
-        .map(([service]) => service);
-      const nextAuth = { ...targetAuth };
-      for (const service of removedServices) delete nextAuth[service];
-      for (const [service, entry] of sourceEntries) nextAuth[service] = structuredClone(entry);
-
-      if (isDeepStrictEqual(targetAuth, nextAuth)) {
-        result.unchanged.push({ preset_name: targetName });
-        continue;
+    const backups = [];
+    for (const plan of plans) {
+      if (!plan.authChanged && !plan.sidecarChanged) continue;
+      const backupPath = plan.authChanged ? await this._writePrivateBackup(`before_credential_distribution_${plan.targetName}`, fileState[plan.targetPath].bytes) : null;
+      const sidecarBackupPath = plan.sidecarChanged && plan.sidecarBytes ? await this._writePrivateBackup(`before_credential_distribution_${plan.targetName}_opencode-go`, plan.sidecarBytes) : null;
+      backups.push({ plan, backupPath, sidecarBackupPath });
+    }
+    const sourceChanged = includeOpenCodeGoSession && (!sourceSidecarBytes || !isDeepStrictEqual(await this._parseSessionBytes(sourceSidecarBytes), session));
+    const sourceBackupPath = sourceChanged && sourceSidecarBytes
+      ? await this._writePrivateBackup(`before_credential_distribution_${sourceName}_opencode-go`, sourceSidecarBytes)
+      : null;
+    try {
+      if (sourceChanged) {
+        result.source_sidecar_backup_path = sourceBackupPath;
+        await this._writeJsonAtomic(sourceSidecarPath, session);
+        result.source_sidecar_changed = true;
       }
-
-      const targetPath = join(this.presetsDir, `${targetName}.json`);
-      const backupPath = join(this.backupsDir, `before_oauth_propagate_${targetName}_${Date.now()}_${randomUUID()}.json`);
-      await fs.copyFile(targetPath, backupPath);
-      await this._writeJsonAtomic(targetPath, nextAuth);
-      result.changed.push({
-        preset_name: targetName,
-        services: [...new Set([...removedServices, ...sourceEntries.map(([service]) => service)])].sort(),
-        backup_path: backupPath,
-      });
+      for (const { plan, backupPath, sidecarBackupPath } of backups) {
+        if (plan.authChanged) await this._writeJsonAtomic(plan.targetPath, plan.nextAuth);
+        if (plan.sidecarChanged) await this._writeJsonAtomic(plan.sidecarPath, session);
+        result.changed.push({ preset_name: plan.targetName, services: keys.slice().sort(), session_changed: plan.sidecarChanged, backup_path: backupPath, sidecar_backup_path: sidecarBackupPath });
+      }
+      result.unchanged = plans.filter(plan => !plan.authChanged && !plan.sidecarChanged).map(plan => ({ preset_name: plan.targetName }));
+    } catch (error) {
+      await this._restoreFileState(fileState);
+      throw error;
     }
 
     return result;
   }
 
+  async propagateCurrentPresetOAuth(targetNames = []) {
+    if (!Array.isArray(targetNames)) throw new TypeError('Target preset names must be an array');
+    const options = await this.getCurrentPresetCredentialOptions();
+    const sourcePath = join(this.presetsDir, `${this.config.current_preset}.json`);
+    const source = JSON.parse(await fs.readFile(sourcePath, 'utf8'));
+    const eligible = Object.entries(source)
+      .filter(([service, entry]) => entry && typeof entry === 'object'
+        && ['refresh', 'access', 'key'].some(key => typeof entry[key] === 'string' && entry[key].trim())
+        && (entry.type === 'oauth' || ['command-code', 'commandcode'].includes(service)))
+      .map(([service]) => service);
+    return this.distributeCurrentPresetCredentials({
+      authServiceKeys: options.filter(option => eligible.includes(option.authServiceKey)).map(option => option.authServiceKey),
+      targetNames,
+    });
+  }
+
+  _sidecarPath(name) { return join(this.sidecarsDir, `${name}.json`); }
+
+  async _readStoredOpenCodeGoSession() {
+    try {
+      const fileStat = await fs.lstat(this.openCodeGoConfigFile);
+      if (!fileStat.isFile()) return null;
+      const parsed = JSON.parse(await fs.readFile(this.openCodeGoConfigFile, 'utf8'));
+      if (typeof parsed?.workspaceId !== 'string' || !parsed.workspaceId.trim() || typeof parsed?.authCookie !== 'string' || !parsed.authCookie.trim()) return null;
+      return { workspaceId: parsed.workspaceId.trim(), authCookie: parsed.authCookie.trim() };
+    } catch { return null; }
+  }
+
+  async _parseSessionBytes(bytes) {
+    try {
+      const parsed = JSON.parse(bytes.toString('utf8'));
+      if (!isPlainObject(parsed) || Object.keys(parsed).sort().join(',') !== 'authCookie,workspaceId') return null;
+      if (typeof parsed?.workspaceId !== 'string' || !parsed.workspaceId.trim() || typeof parsed?.authCookie !== 'string' || !parsed.authCookie.trim()) return null;
+      return { workspaceId: parsed.workspaceId.trim(), authCookie: parsed.authCookie.trim() };
+    } catch { return null; }
+  }
+
+  async _readSidecar(name) {
+    try {
+      const bytes = await this._readSafeSidecarBytes(this._sidecarPath(name));
+      if (bytes === null) return { exists: false, value: null };
+      const value = await this._parseSessionBytes(bytes);
+      return value ? { exists: true, value } : { exists: true, error: new Error(`Invalid OpenCode Go sidecar: ${name}`) };
+    } catch (error) {
+      if (error.code === 'ENOENT') return { exists: false, value: null };
+      throw error;
+    }
+  }
+
+  async _readSafeSidecarBytes(path) {
+    try {
+      const fileStat = await fs.lstat(path);
+      if (fileStat.isSymbolicLink()) throw new Error(`Unsafe OpenCode Go sidecar path: ${path}`);
+      if (!fileStat.isFile()) throw new Error(`Invalid OpenCode Go sidecar path: ${path}`);
+      return await fs.readFile(path);
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async _readSafeGlobalBytes() {
+    try {
+      const fileStat = await fs.lstat(this.openCodeGoConfigFile);
+      if (fileStat.isSymbolicLink()) throw new Error(`Unsafe OpenCode Go global session path: ${this.openCodeGoConfigFile}`);
+      if (!fileStat.isFile()) return null;
+      return await fs.readFile(this.openCodeGoConfigFile);
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async _writeBytesAtomic(path, bytes) {
+    const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try { await fs.mkdir(dirname(path), { recursive: true }); await fs.writeFile(tmpPath, bytes, { mode: 0o600 }); await fs.rename(tmpPath, path); await fs.chmod(path, 0o600); }
+    catch (error) { await fs.unlink(tmpPath).catch(() => {}); throw error; }
+  }
+
   async _writeJsonAtomic(path, data) {
-    const tmpPath = `${path}.${process.pid}.tmp`;
+    const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
       await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
       await fs.rename(tmpPath, path);
+      await fs.chmod(path, 0o600);
     } catch (error) {
       await fs.unlink(tmpPath).catch(() => {});
       throw error;
     }
+  }
+
+  async _captureFileState(paths) {
+    const state = {};
+    for (const path of paths) state[path] = { bytes: await fs.readFile(path).catch(() => null) };
+    return state;
+  }
+
+  async _restoreFileState(state) {
+    for (const [path, file] of Object.entries(state)) {
+      if (file.bytes === null) await fs.unlink(path).catch(() => {});
+      else await this._writeBytesAtomic(path, file.bytes);
+    }
+  }
+
+  async _writePrivateBackup(prefix, bytes) {
+    const path = join(this.backupsDir, `${prefix}_${Date.now()}_${randomUUID()}.json`);
+    await fs.writeFile(path, bytes, { mode: 0o600 });
+    await fs.chmod(path, 0o600);
+    return path;
   }
 
   async _refreshExpiredOpenAICredentials() {
@@ -824,7 +1039,8 @@ export class PresetManager {
   async _getOpenCodeGoCredentials() {
     let config = {};
     try {
-      const parsed = JSON.parse(await fs.readFile(this.openCodeGoConfigFile, 'utf-8'));
+      const bytes = await this._readSafeGlobalBytes();
+      const parsed = bytes === null ? null : JSON.parse(bytes.toString('utf8'));
       if (parsed && typeof parsed === 'object') config = parsed;
     } catch {}
 

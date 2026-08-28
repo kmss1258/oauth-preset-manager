@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -70,6 +70,31 @@ test('collectOpenCodeGoQuota falls back to the local OPM credential config', asy
     assert.equal(result.daily.percent_remaining, 90);
     assert.equal(request.url, 'https://opencode.ai/workspace/wrk_config123/go');
     assert.equal(request.options.headers.Cookie, 'auth=config-cookie');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWorkspaceId === undefined) delete process.env.OPENCODE_GO_WORKSPACE_ID;
+    else process.env.OPENCODE_GO_WORKSPACE_ID = originalWorkspaceId;
+    if (originalAuthCookie === undefined) delete process.env.OPENCODE_GO_AUTH_COOKIE;
+    else process.env.OPENCODE_GO_AUTH_COOKIE = originalAuthCookie;
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('collectOpenCodeGoQuota ignores a symlinked global config without env overrides', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-go-symlink-'));
+  const originalFetch = globalThis.fetch;
+  const originalWorkspaceId = process.env.OPENCODE_GO_WORKSPACE_ID;
+  const originalAuthCookie = process.env.OPENCODE_GO_AUTH_COOKIE;
+  delete process.env.OPENCODE_GO_WORKSPACE_ID;
+  delete process.env.OPENCODE_GO_AUTH_COOKIE;
+  let calls = 0;
+  try {
+    const realConfig = join(configDir, 'real-opencode-go.json');
+    await writeFile(realConfig, JSON.stringify({ workspaceId: 'wrk_symlink', authCookie: 'secret-cookie' }));
+    await symlink(realConfig, join(configDir, 'opencode-go.json'));
+    globalThis.fetch = async () => { calls += 1; throw new Error('must not fetch'); };
+    assert.deepEqual(await new PresetManager(configDir).collectOpenCodeGoQuota(), []);
+    assert.equal(calls, 0);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalWorkspaceId === undefined) delete process.env.OPENCODE_GO_WORKSPACE_ID;
