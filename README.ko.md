@@ -41,7 +41,8 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 - 💾 **프리셋 관리**: 여러 인증 상태를 저장하고 정리
 - 📊 **쿼터 조회**: `opm q` / `opm quota`로 Rich 표 형식으로 확인하며, 대화형 화면은 60초마다 자동 갱신되고 표 위에 다음 갱신 카운트다운을 표시
 - 피크 시간은 고정된 평일(월–금) UTC 01:00–04:00 / KST 10:00–13:00, UTC 06:00–10:00 / KST 15:00–19:00이며 주말은 쉽니다. 시작 1시간 전부터 `HH:MM:SS` 카운트다운을 표시하고, 피크 중에는 TTY 화면의 테두리가 파스텔 무지개색으로 회전합니다. 서머타임은 적용하지 않습니다.
-- 대상 프리셋을 선택해 현재 프리셋의 OAuth/Command Code 인증으로 덮어쓸 수 있으며, 관련 없는 서비스는 유지됩니다. OpenAI kickoff에는 `gpt-5.6-luna`를 사용합니다.
+- 인증 배포에서는 먼저 정확한 top-level 인증 항목을 선택하고, 다음 대상 프리셋을 선택합니다(대상은 기본적으로 모두 선택). 선택한 키만 덮어쓰며 선택하지 않은 OAuth/API 항목은 모두 유지됩니다. OpenAI kickoff에는 `gpt-5.6-luna`를 사용합니다.
+- OpenCode Go API 인증(`opencode-go:api`)과 브라우저/사용량 세션(`OpenCode Go OAuth session`)은 별개입니다. 세션은 `auth.json`에 넣지 않고 `~/.config/oauth-preset-manager/preset-sidecars/opencode-go/` 사이드카에 저장합니다.
 - 🔒 **자동 백업**: 전환 전 자동 백업으로 안전하게
 - ⚡ **간단한 명령어**: `save`와 `switch` 두 개면 충분!
 
@@ -60,6 +61,7 @@ opm
 - 👀 각 프리셋에 포함된 서비스 확인
 - ⚡ 프리셋 즉시 전환
 - 💾 새 프리셋 저장
+- 🔗 인증 항목과 대상 프리셋을 순서대로 선택해 배포
 
 ### 💻 명령줄 모드
 
@@ -155,11 +157,16 @@ OpenCode Go API key는 모델 사용을 활성화합니다. `opm q`에서 5시�
 chmod 600 ~/.config/oauth-preset-manager/opencode-go.json
 ```
 
+저장된 Go 파일만 Go OAuth 세션 저장·배포의 원본으로 사용합니다. `OPENCODE_GO_WORKSPACE_ID`와 `OPENCODE_GO_AUTH_COOKIE` 환경 변수는 quota 조회용 런타임 override이며 프리셋이나 사이드카에 저장하지 않습니다. 사이드카가 있는 프리셋으로 전환하면 해당 세션을 복원하고, 기존 프리셋처럼 사이드카가 없으면 현재 전역 Go 세션을 그대로 둡니다.
+
 ## 📁 데이터 저장 위치
 
 - **프리셋**: `~/.config/oauth-preset-manager/presets/`
 - **백업**: `~/.config/oauth-preset-manager/backups/`
 - **설정**: `~/.config/oauth-preset-manager/config.json`
+- **OpenCode Go 사이드카**: `~/.config/oauth-preset-manager/preset-sidecars/opencode-go/`
+
+저장된 전역 Go 세션이 없거나 잘못된 경우에도 기존 사이드카를 삭제하거나 바꾸지 않습니다. 빈 데이터를 세션 삭제 의도로 추정하지 않으므로 데이터 손실 없이 유지합니다.
 
 ## 📋 요구사항
 

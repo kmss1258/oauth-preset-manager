@@ -36,7 +36,8 @@ opm
 - **Auto-Detection**: Alerts you if the current auth doesn't match the selected preset.
 - **Interactive CLI**: Beautiful interactive prompts with arrow key navigation.
 - Includes an OpenAI-only interactive menu action that sends one `gpt-5.6-luna` request across saved OpenAI OAuth targets to kick quota back into motion after reset.
-- Includes a menu action to select presets and replace their eligible OAuth/Command Code credentials from the current preset while preserving unrelated services.
+- Includes a credential distribution action: choose exact top-level auth entries first, then destination presets (all destinations are selected by default). Only selected keys are replaced; every other OAuth/API entry is preserved.
+- OpenCode Go API credentials (`opencode-go:api`) are separate from the optional browser/usage session (`OpenCode Go OAuth session`). Sessions are stored as normalized sidecars in `~/.config/oauth-preset-manager/preset-sidecars/opencode-go/`, never inside `auth.json`.
 - **Multi-language**: English & Korean support (auto-detected).
 
 ## 🚀 Installation
@@ -70,6 +71,7 @@ opm
 - View detailed quotas.
 - Run the OpenAI quota kickoff action when you want to send one lightweight `gpt-5.6-luna` request to each OpenAI OAuth target.
 - Save current configuration as a new preset.
+- Distribute selected credentials to selected presets. Legacy presets without a Go sidecar remain auth-only.
 
 ### CLI Commands
 
@@ -128,6 +130,11 @@ You may store those two values in `~/.config/oauth-preset-manager/opencode-go.js
 ```bash
 chmod 600 ~/.config/oauth-preset-manager/opencode-go.json
 ```
+
+The stored Go file is the only source used when saving or distributing a Go OAuth session. `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE` are runtime quota overrides and are never persisted into presets or sidecars. Switching a preset with a sidecar restores its session; switching to a legacy preset leaves the current global Go session unchanged.
+
+Go sidecars are stored outside the preset JSON files at `~/.config/oauth-preset-manager/preset-sidecars/opencode-go/<preset>.json` with restricted permissions.
+If the stored global Go session is missing or malformed, saving/overwriting a preset leaves any existing sidecar unchanged; clearing a session is never inferred from absent data.
 
 ## 📝 Project Structure
 
