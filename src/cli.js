@@ -196,9 +196,9 @@ export function buildInteractiveChoices(presets) {
       description: 'Send one GPT-5.6 Luna request to each OpenAI target'
     },
     {
-      name: `  ${chalk.cyan('🔗')} ${t('propagate_oauth')}`,
-      value: '__propagate_oauth__',
-      description: 'Replace selected preset OAuth/Command Code credentials from the current preset'
+      name: `  ${chalk.cyan('🔗')} ${t('distribute_credentials')}`,
+      value: '__distribute_credentials__',
+      description: 'Select credentials, then destination presets'
     },
     {
       name: `  ${chalk.yellow('🗑️')} ${t('delete_preset')}`,
@@ -438,6 +438,7 @@ function shouldRenderProGradient(value) {
 }
 
 const OPENCODE_GO_PERCENT_OPTIONS = { fillColor: chalk.cyan };
+const COMMAND_CODE_PERCENT_OPTIONS = { fillColor: chalk.magenta };
 
 function formatOpenCodeGoPercent(value) {
   return formatPercent(value, OPENCODE_GO_PERCENT_OPTIONS);
@@ -629,7 +630,7 @@ export function formatCommandCodeAccountCell(result) {
 }
 
 export function formatCommandCodeQuotaCell(result, window, detail = '') {
-  const value = formatPercent(window?.percent_remaining, { rainbow: false });
+  const value = formatPercent(window?.percent_remaining, COMMAND_CODE_PERCENT_OPTIONS);
   return detail ? `${value}\n${chalk.dim(detail)}` : value;
 }
 
@@ -1145,7 +1146,7 @@ async function deletePresetInteractive(manager, presets) {
   }
 }
 
-export async function propagateOAuthInteractive(manager, prompts = { checkbox, confirm }) {
+export async function distributeCredentialsInteractive(manager, prompts = { checkbox, confirm }) {
   console.clear();
   printHeader();
   const source = manager.config?.current_preset;
@@ -1154,46 +1155,70 @@ export async function propagateOAuthInteractive(manager, prompts = { checkbox, c
     return;
   }
 
+  const credentialOptions = await manager.getCurrentPresetCredentialOptions();
+  if (credentialOptions.length === 0) {
+    console.log(chalk.yellow(`  ⚠ ${t('credential_distribution_no_credentials')}`));
+    return;
+  }
+
+  const selectedCredentials = await prompts.checkbox({
+    message: chalk.cyan(`  ${t('credential_distribution_select_credentials')}`),
+    choices: credentialOptions.map(option => ({
+      name: option.label === 'OpenCode Go OAuth session'
+        ? `${t('opencode_go_oauth_session')} (${t('opencode_go_session_description')})`
+        : option.description ? `${option.label} (${option.description})` : option.label,
+      value: option.authServiceKey || '__opencode_go_session__',
+    })),
+  });
+  if (!selectedCredentials?.length) {
+    console.log(chalk.yellow(`  ⚠ ${t('credential_distribution_no_selection')}`));
+    return;
+  }
+
+  const includeOpenCodeGoSession = selectedCredentials.includes('__opencode_go_session__');
+  const authServiceKeys = selectedCredentials.filter(value => value !== '__opencode_go_session__');
   const destinations = (await manager.listPresets())
     .map(preset => preset.name)
     .filter(name => name !== source);
   if (destinations.length === 0) {
-    console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_destinations')}`));
+    console.log(chalk.yellow(`  ⚠ ${t('credential_distribution_no_destinations')}`));
     return;
   }
 
   const selected = await prompts.checkbox({
-    message: chalk.cyan(`  ${t('oauth_propagate_select_targets')}`),
-    choices: destinations.map(name => ({ name, value: name })),
+    message: chalk.cyan(`  ${t('credential_distribution_select_targets')}`),
+    choices: destinations.map(name => ({ name, value: name, checked: true })),
   });
   if (!selected?.length) {
-    console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_selection')}`));
+    console.log(chalk.yellow(`  ⚠ ${t('credential_distribution_no_selection')}`));
     return;
   }
 
   const confirmed = await prompts.confirm({
-    message: chalk.yellow(`  ${t('oauth_propagate_confirm', { source, targets: selected.join(', ') })}`),
+    message: chalk.yellow(`  ${t('credential_distribution_confirm', {
+      credentials: credentialOptions.filter(option => selectedCredentials.includes(option.authServiceKey || '__opencode_go_session__')).map(option => option.label).join(', '),
+      source,
+      targets: selected.join(', '),
+    })}`),
     default: false,
   });
   if (!confirmed) return;
 
   try {
-    const result = await manager.propagateCurrentPresetOAuth(selected);
-    if (result.source_entries === 0) {
-      console.log(chalk.yellow(`  ⚠ ${t('oauth_propagate_no_eligible_source')}`));
-      return;
-    }
+    const result = await manager.distributeCurrentPresetCredentials({ authServiceKeys, includeOpenCodeGoSession, targetNames: selected });
     const changed = result.changed.length;
     const unchanged = result.unchanged.length;
     printInfoBox('✓ Success', [
-      t('oauth_propagate_complete'),
-      `${t('oauth_propagate_changed')}: ${changed}`,
-      `${t('oauth_propagate_unchanged')}: ${unchanged}`,
+      t('credential_distribution_complete'),
+      `${t('credential_distribution_changed')}: ${changed}`,
+      `${t('credential_distribution_unchanged')}: ${unchanged}`,
     ]);
   } catch (error) {
     console.log(chalk.red(`  ✗ ${t('error')}: ${error.message}`));
   }
 }
+
+export const propagateOAuthInteractive = distributeCredentialsInteractive;
 
 async function cmdSave(manager, name) {
   try {
@@ -1727,8 +1752,8 @@ async function interactiveMode(manager) {
         await runOpenAIKickoffInteractive(manager);
         await input({ message: chalk.dim('Press Enter to continue...') });
         break;
-      case '__propagate_oauth__':
-        await propagateOAuthInteractive(manager);
+      case '__distribute_credentials__':
+        await distributeCredentialsInteractive(manager);
         await input({ message: chalk.dim('Press Enter to continue...') });
         break;
       case '__delete__':

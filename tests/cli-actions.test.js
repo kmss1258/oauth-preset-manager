@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, propagateOAuthInteractive, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeQuotaCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, propagateOAuthInteractive, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
 
 const ESC = String.fromCharCode(27);
@@ -13,7 +13,7 @@ test('interactive choices include the OpenAI kickoff action', () => {
   const values = choices.filter(choice => choice && typeof choice === 'object' && 'value' in choice).map(choice => choice.value);
 
   assert.ok(values.includes('__openai_kickoff__'));
-  assert.ok(values.includes('__propagate_oauth__'));
+  assert.ok(values.includes('__distribute_credentials__'));
 });
 
 test('affected menu actions render exactly one icon in Korean and English', () => {
@@ -35,26 +35,27 @@ test('affected menu actions render exactly one icon in Korean and English', () =
   setLanguage('en');
 });
 
-test('OAuth propagation filters destinations, confirms named choices, and passes selection', async () => {
+test('credential distribution selects credentials before checked destinations and confirms labels', async () => {
   setLanguage('en');
   const calls = [];
   const manager = {
     config: { current_preset: 'source' },
+    getCurrentPresetCredentialOptions: async () => [{ authServiceKey: 'openai', label: 'openai:oauth' }, { authServiceKey: 'opencode-go', label: 'opencode-go:api' }, { authServiceKey: null, label: 'OpenCode Go OAuth session' }],
     listPresets: async () => [{ name: 'source' }, { name: 'target-a' }, { name: 'target-b' }],
-    propagateCurrentPresetOAuth: async names => { calls.push(names); return { changed: [], unchanged: names.map(preset_name => ({ preset_name })) }; },
+    distributeCurrentPresetCredentials: async options => { calls.push(options); return { changed: [], unchanged: options.targetNames.map(preset_name => ({ preset_name })) }; },
   };
   await propagateOAuthInteractive(manager, {
-    checkbox: async options => { calls.push(options.choices.map(choice => choice.value)); return ['target-b']; },
+    checkbox: async options => { calls.push(options); return calls.length === 1 ? ['openai', '__opencode_go_session__'] : ['target-b']; },
     confirm: async options => { calls.push(options); return true; },
   });
-  assert.deepEqual(calls[0], ['target-a', 'target-b']);
-  assert.match(calls[1].message, /in 'target-b' with those from current preset 'source'/);
-  assert.doesNotMatch(calls[1].message, /in 'source',/);
-  assert.equal(calls[1].default, false);
-  assert.deepEqual(calls[2], ['target-b']);
+  assert.deepEqual(calls[0].choices.map(choice => choice.value), ['openai', 'opencode-go', '__opencode_go_session__']);
+  assert.equal(calls[1].choices.find(choice => choice.value === 'target-a').checked, true);
+  assert.match(calls[2].message, /openai:oauth, OpenCode Go OAuth session/);
+  assert.equal(calls[2].default, false);
+  assert.deepEqual(calls[3], { authServiceKeys: ['openai'], includeOpenCodeGoSession: true, targetNames: ['target-b'] });
 });
 
-test('OAuth propagation warns when the source has no eligible credentials', async () => {
+test('credential distribution stops on empty credential selection', async () => {
   let coreCalled = false;
   const originalLog = console.log;
   const output = [];
@@ -63,26 +64,28 @@ test('OAuth propagation warns when the source has no eligible credentials', asyn
     await propagateOAuthInteractive({
       config: { current_preset: 'source' },
       listPresets: async () => [{ name: 'source' }, { name: 'target' }],
-      propagateCurrentPresetOAuth: async names => {
+       getCurrentPresetCredentialOptions: async () => [],
+       distributeCurrentPresetCredentials: async names => {
         coreCalled = true;
         assert.deepEqual(names, ['target']);
         return { source_entries: 0, changed: [], unchanged: [{ preset_name: 'target' }] };
       },
-    }, { checkbox: async () => ['target'], confirm: async () => true });
+     }, { checkbox: async () => ['target'], confirm: async () => true });
   } finally {
     console.log = originalLog;
   }
-  assert.equal(coreCalled, true);
-  assert.ok(output.some(line => line.includes('no eligible OAuth/Command Code credentials')));
+  assert.equal(coreCalled, false);
+  assert.ok(output.some(line => line.includes('no credentials')));
 });
 
-test('OAuth propagation does not confirm or call core for empty selection', async () => {
+test('credential distribution does not confirm or call core for empty selection', async () => {
   let coreCalled = false;
   let confirmCalled = false;
   await propagateOAuthInteractive({
     config: { current_preset: 'source' },
+    getCurrentPresetCredentialOptions: async () => [{ authServiceKey: 'openai', label: 'openai:oauth' }],
     listPresets: async () => [{ name: 'source' }, { name: 'target' }],
-    propagateCurrentPresetOAuth: async () => { coreCalled = true; },
+    distributeCurrentPresetCredentials: async () => { coreCalled = true; },
   }, {
     checkbox: async () => [],
     confirm: async () => { confirmCalled = true; return true; },
@@ -91,22 +94,24 @@ test('OAuth propagation does not confirm or call core for empty selection', asyn
   assert.equal(confirmCalled, false);
 });
 
-test('OAuth propagation is a no-op with no destinations', async () => {
+test('credential distribution is a no-op with no destinations', async () => {
   let checkboxCalled = false;
   await propagateOAuthInteractive({
     config: { current_preset: 'source' },
+    getCurrentPresetCredentialOptions: async () => [{ authServiceKey: 'openai', label: 'openai:oauth' }],
     listPresets: async () => [{ name: 'source' }],
   }, { checkbox: async () => { checkboxCalled = true; return []; } });
-  assert.equal(checkboxCalled, false);
+  assert.equal(checkboxCalled, true);
 });
 
-test('OAuth propagation rejection does not call core', async () => {
+test('credential distribution rejection does not call core', async () => {
   let coreCalled = false;
   await propagateOAuthInteractive({
     config: { current_preset: 'source' },
+    getCurrentPresetCredentialOptions: async () => [{ authServiceKey: 'openai', label: 'openai:oauth' }],
     listPresets: async () => [{ name: 'source' }, { name: 'target' }],
-    propagateCurrentPresetOAuth: async () => { coreCalled = true; },
-  }, { checkbox: async () => ['target'], confirm: async () => false });
+    distributeCurrentPresetCredentials: async () => { coreCalled = true; },
+  }, { checkbox: async options => options.choices[0].value === 'openai' ? ['openai'] : ['target'], confirm: async () => false });
   assert.equal(coreCalled, false);
 });
 
@@ -521,6 +526,26 @@ test('OpenCode Go quota bars use cyan fill while warning percents stay red and y
     assert.match(cell, new RegExp(`${ansi}\\[33m\\s*42%`));
     assert.match(cell, new RegExp(`${ansi}\\[31m\\s*12%`));
     assert.match(formatPercent(60), new RegExp(`${ansi}\\[32m█+`));
+  } finally {
+    chalk.level = previousLevel;
+  }
+});
+
+test('Command Code quota bars use magenta fill while warning percents stay red and yellow', () => {
+  const previousLevel = chalk.level;
+  chalk.level = 1;
+
+  try {
+    const ansi = String.fromCharCode(27);
+    const yellowCell = formatCommandCodeQuotaCell({}, { percent_remaining: 42 });
+    const redCell = formatCommandCodeQuotaCell({}, { percent_remaining: 12 });
+
+    assert.match(yellowCell, new RegExp(`${ansi}\\[35m█+`));
+    assert.match(redCell, new RegExp(`${ansi}\\[35m█+`));
+    assert.doesNotMatch(yellowCell, new RegExp(`${ansi}\\[32m█+`));
+    assert.doesNotMatch(yellowCell, new RegExp(`${ansi}\\[36m█+`));
+    assert.match(yellowCell, new RegExp(`${ansi}\\[33m\\s*42%`));
+    assert.match(redCell, new RegExp(`${ansi}\\[31m\\s*12%`));
   } finally {
     chalk.level = previousLevel;
   }
