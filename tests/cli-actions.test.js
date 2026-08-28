@@ -139,9 +139,9 @@ test('quota countdown uses ceil and never goes below zero', () => {
 
 test('quota countdown is translated in English and Korean', () => {
   setLanguage('en');
-  assert.equal(formatQuotaRefreshCountdown(12), 'Auto-refresh in 12s');
+  assert.equal(formatQuotaRefreshCountdown(12), 'Refresh in 12s');
   setLanguage('ko');
-  assert.equal(formatQuotaRefreshCountdown(12), '12초 후 자동 새로고침');
+  assert.equal(formatQuotaRefreshCountdown(12), '12초 후 갱신');
   setLanguage('en');
 });
 
@@ -173,7 +173,7 @@ test('Korean peak labels are exact and retain countdown/schedule details', () =>
   setLanguage('ko');
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0))), '피크 진입 주의 · 00:30:00 후 시작');
   assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 1, 30, 0))), '피크 모드 활성 · 02:30:00 후 종료');
-  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '피크 어림 없음 · 평일(월–금)만: UTC 01:00–04:00, 06:00–10:00 / ☀️ KST 10:00–13:00, 🏢 KST 15:00–19:00 · 주말 휴무');
+  assert.equal(formatPeakStatus(getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0))), '오프피크 · 평일 10–13시/15–19시');
   setLanguage('en');
 });
 
@@ -188,9 +188,9 @@ test('countdown tick updates only the saved countdown line', () => {
   const output = { write: value => writes.push(value) };
   const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
 
-  assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 🌙 · ${formatPeakStatus(getPeakState(now))} · Auto-refresh in 12s`));
+  assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 🌙 · ${formatPeakStatus(getPeakState(now))} · Refresh in 12s`));
   updateQuotaCountdownLine(11, output, now);
-  assert.match(writes[0], new RegExp(`${ESC}8${ESC}\\[2K\\r  Current KST 23:05:06 🌙 · .* · Auto-refresh in 11s${ESC}\\[u`));
+  assert.match(writes[0], new RegExp(`${ESC}8${ESC}\\[2K\\r  Current KST 23:05:06 🌙 · .* · Refresh in 11s${ESC}\\[u`));
 });
 
 test('active peak status border rotates in TTY output and stays off otherwise', () => {
@@ -221,7 +221,7 @@ test('quota status line omits refresh countdown when refresh is disabled', () =>
   const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
   const line = formatQuotaCountdownLine(null, now, getPeakState(now), { output: { isTTY: false } });
   assert.match(line, /Current KST 23:05:06 🌙/);
-  assert.doesNotMatch(line, /Auto-refresh/);
+  assert.doesNotMatch(line, /Refresh in/);
   assert.doesNotMatch(line, new RegExp(`${ESC}\\[`));
 });
 
@@ -252,7 +252,7 @@ test('peak status colors distinguish off, pre-alert, and active states', () => {
     const off = formatQuotaCountdownLine(null, new Date(Date.UTC(2026, 7, 17, 12, 0, 0)), getPeakState(Date.UTC(2026, 7, 17, 12, 0, 0)), { output, interactive: false });
     const preAlert = formatQuotaCountdownLine(null, new Date(Date.UTC(2026, 7, 17, 0, 30, 0)), getPeakState(Date.UTC(2026, 7, 17, 0, 30, 0)), { output, interactive: false });
     const active = formatQuotaCountdownLine(null, new Date(Date.UTC(2026, 7, 17, 1, 30, 0)), getPeakState(Date.UTC(2026, 7, 17, 1, 30, 0)), { output, interactive: false });
-    assert.match(off, new RegExp(`${ESC}\\[32m피크 어림 없음`));
+     assert.match(off, new RegExp(`${ESC}\\[32m오프피크`));
     assert.match(preAlert, new RegExp(`${ESC}\\[33m피크 진입 주의`));
     assert.match(active, new RegExp(`${ESC}\\[31m피크 모드 활성`));
   } finally {
