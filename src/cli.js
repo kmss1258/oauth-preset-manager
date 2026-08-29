@@ -731,7 +731,7 @@ function calculateColWidths(totalWidth) {
   }
 }
 
-function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countdownSeconds = null, now = new Date()) {
+function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countdownSeconds = null, now = new Date(), rootDiskLine = null) {
   console.log();
   console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
   console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
@@ -740,6 +740,7 @@ function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countd
   
   const normalized = normalizeQuotaResults(results);
   renderOpenAIBanner(normalized, termWidth);
+  if (rootDiskLine) console.log(chalk.dim(`  ${rootDiskLine}`));
   if (countdownSeconds != null && process.stdout.isTTY) {
     process.stdout.write('\u001b7');
   }
@@ -1347,7 +1348,7 @@ export function waitForQuotaKeypress(timeoutMs = null) {
   });
 }
 
-async function renderQuotaTableWithToggle(results, showGoogle = true, countdownSeconds = null, now = new Date()) {
+async function renderQuotaTableWithToggle(results, showGoogle = true, countdownSeconds = null, now = new Date(), rootDiskLine = null) {
   const termWidth = getTerminalWidth();
   const normalized = normalizeQuotaResults(results);
   if (!normalized.length) {
@@ -1464,7 +1465,8 @@ async function renderQuotaTableWithToggle(results, showGoogle = true, countdownS
   for (const row of activeRows) table.push(row);
   if (activeRows.length > 0 && presetRows.length > 0) table.push([]);
   for (const row of presetRows) table.push(row);
-  
+
+  if (rootDiskLine) console.log(chalk.dim(`  ${rootDiskLine}`));
   if (countdownSeconds != null && process.stdout.isTTY) {
     process.stdout.write('\u001b7');
   }
@@ -1516,7 +1518,6 @@ async function cmdQuota(manager) {
 
         renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
         const rootDiskLine = await getRootDiskLine();
-        if (rootDiskLine) console.log(chalk.dim(`  ${rootDiskLine}`));
 
         const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
         const countdownSeconds = interactive
@@ -1524,9 +1525,9 @@ async function cmdQuota(manager) {
           : null;
 
         if (termWidth >= 80) {
-          await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds, tickNow);
+          await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds, tickNow, rootDiskLine);
         } else {
-          renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds, tickNow);
+          renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds, tickNow, rootDiskLine);
           if (showGoogleDetail && googleCount > 0) {
             await renderGoogleModelsDetail(normalizedResults, termWidth);
           }
