@@ -3,7 +3,7 @@
 import { select, input, confirm, checkbox, Separator } from '@inquirer/prompts';
 import chalk from 'chalk';
 import Table from 'cli-table3';
-import { existsSync } from 'fs';
+import { existsSync, promises as fs } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { createRequire } from 'module';
@@ -124,6 +124,18 @@ export function getQuotaRefreshCountdownSeconds(deadline, now = Date.now()) {
 
 export function formatQuotaRefreshCountdown(seconds) {
   return t('quota_auto_refresh_countdown', { seconds });
+}
+
+export async function getRootDiskLine(statfs = fs.statfs) {
+  if (typeof statfs !== 'function') return null;
+
+  try {
+    const stats = await statfs('/', { bigint: true });
+    const availableGiB = Number(stats.bavail * stats.bsize) / 1024 ** 3;
+    return `💾 / ${availableGiB.toFixed(1)} GiB`;
+  } catch {
+    return null;
+  }
 }
 
 export function formatQuotaCountdownLine(seconds, now = new Date(), peakState = getPeakState(now), options = {}) {
@@ -1503,6 +1515,8 @@ async function cmdQuota(manager) {
         printHeader();
 
         renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
+        const rootDiskLine = await getRootDiskLine();
+        if (rootDiskLine) console.log(chalk.dim(`  ${rootDiskLine}`));
 
         const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
         const countdownSeconds = interactive

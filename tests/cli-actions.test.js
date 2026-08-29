@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import chalk from 'chalk';
 
-import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeQuotaCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, propagateOAuthInteractive, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
+import { buildInteractiveChoices, buildPresetQuotaSummary, formatCommandCodeAccountCell, formatCommandCodeQuotaCell, formatCommandCodeResetCell, formatOpenCodeGoAccountCell, formatPercent, formatPeakCountdown, formatPeakStatus, formatQuotaCountdownLine, formatQuotaRefreshCountdown, getPeakState, getQuotaRefreshCountdownSeconds, getQuotaTableRowItems, getRootDiskLine, isRainbowQuotaEligible, normalizeQuotaActionKey, normalizeQuotaResults, propagateOAuthInteractive, summarizeOpenAIRefreshResults, updateQuotaCountdownLine, QUOTA_FOOTER_TEXT, QUOTA_REFRESH_INTERVAL_MS, waitForQuotaKeypress } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
 
 const ESC = String.fromCharCode(27);
@@ -143,6 +143,18 @@ test('quota countdown is translated in English and Korean', () => {
   setLanguage('ko');
   assert.equal(formatQuotaRefreshCountdown(12), '12초 후 갱신');
   setLanguage('en');
+});
+
+test('root disk line reads current available space on every call', async () => {
+  const availableBlocks = [7_340_032n, 3_670_016n];
+  const statfs = async (path, options) => {
+    assert.equal(path, '/');
+    assert.deepEqual(options, { bigint: true });
+    return { bavail: availableBlocks.shift(), bsize: 1024n };
+  };
+
+  assert.equal(await getRootDiskLine(statfs), '💾 / 7.0 GiB');
+  assert.equal(await getRootDiskLine(statfs), '💾 / 3.5 GiB');
 });
 
 test('peak state follows fixed UTC weekday windows and Monday rollover', () => {
