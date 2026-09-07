@@ -1,10 +1,11 @@
-import { promises as fs } from 'fs';
+import { constants, promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import https from 'https';
 import { env } from 'process';
 import { isDeepStrictEqual } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { t } from './i18n.js';
 
 const ANTIGRAVITY_CLIENT_ID = env.OPM_ANTIGRAVITY_CLIENT_ID?.trim() || '';
 const ANTIGRAVITY_CLIENT_SECRET = env.OPM_ANTIGRAVITY_CLIENT_SECRET?.trim() || '';
@@ -79,6 +80,53 @@ export function getCommandCodeAuthPathCandidates(homeDir = homedir()) {
   ];
 }
 
+export function getClaudeCodeCredentialsPath(homeDir = homedir()) {
+  return env.OPM_CLAUDE_AUTH_PATH?.trim()
+    || join(env.CLAUDE_CONFIG_DIR?.trim() || join(homeDir, '.claude'), '.credentials.json');
+}
+
+async function readQuotaAuth(path) {
+  let file;
+  try {
+    file = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 1024 * 1024) return null;
+    const data = JSON.parse(await file.readFile('utf8'));
+    // Keep object-shaped invalid presets visible to the caller's validation.
+    return data !== null && typeof data === 'object' ? data : null;
+  } catch {
+    return null;
+  } finally {
+    await file?.close();
+  }
+}
+
+export function parseClaudeUsage(data) {
+  const window = (value, label) => {
+    const used = value?.utilization ?? value?.used_percentage ?? value?.percent;
+    if (typeof used !== 'number' || !Number.isFinite(used)) return null;
+    const reset = value.resets_at;
+    const date = typeof reset === 'number' ? new Date(reset < 1e12 ? reset * 1000 : reset)
+      : typeof reset === 'string' && reset ? new Date(reset) : null;
+    return { label, percent_remaining: Math.round(Math.max(0, Math.min(100, 100 - used))),
+      reset_time_iso: date && Number.isFinite(date.getTime()) ? date.toISOString() : null };
+  };
+  const limits = Array.isArray(data?.limits) ? data.limits.filter(limit => limit && limit.is_active !== false) : [];
+  const daily = window(limits.find(limit => limit.kind === 'session'), '5h') || window(data?.five_hour, '5h');
+  const weekly = window(limits.find(limit => limit.kind === 'weekly_all'), 'Weekly') || window(data?.seven_day, 'Weekly');
+  const scoped = limits.filter(limit => limit.kind === 'weekly_scoped' && limit.group === 'weekly')
+    .map(limit => window(limit, typeof limit.scope?.model?.display_name === 'string' ? limit.scope.model.display_name : 'Model')).filter(Boolean);
+  const legacy = ['seven_day_opus', 'seven_day_sonnet'].map(key =>
+    window(data?.[key], key === 'seven_day_opus' ? 'Opus' : 'Sonnet')).filter(Boolean);
+  const extra_windows = scoped.length ? scoped : legacy;
+  if (data?.extra_usage?.is_enabled === true) {
+    const extra = window(data.extra_usage, 'Extra');
+    if (extra) extra_windows.push(extra);
+  }
+  if (!daily && !weekly && extra_windows.length === 0) throw new Error('Invalid Claude usage response');
+  return { daily, weekly, extra_windows };
+}
+
 async function findFirstExistingPath(paths) {
   for (const path of paths) {
     if (!path) continue;
@@ -103,6 +151,7 @@ export class PresetManager {
     this.quotaCache = this._createEmptyQuotaCache();
     this.lastOpenAIRefreshResults = [];
     this._requestJson = httpsRequest;
+    this._claudeQuotaCache = new Map();
   }
 
   async init() {
@@ -550,12 +599,8 @@ export class PresetManager {
 
       for (const file of jsonFiles) {
         const name = file.slice(0, -5);
-        try {
-          const data = JSON.parse(await fs.readFile(join(this.presetsDir, file), 'utf-8'));
-          if (typeof data === 'object' && data !== null) {
-            results.push([name, data]);
-          }
-        } catch {}
+        const data = await readQuotaAuth(join(this.presetsDir, file));
+        if (data) results.push([name, data]);
       }
     } catch {}
 
@@ -1027,13 +1072,74 @@ export class PresetManager {
   async collectAllQuota() {
     this.lastOpenAIRefreshResults = await this._refreshExpiredOpenAICredentials();
 
-    const [active, openai, opencodego, commandcode] = await Promise.all([
+    const [active, openai, opencodego, commandcode, claude] = await Promise.all([
       this.collectActiveQuota(),
       this.collectOpenAIQuota(),
       this.collectOpenCodeGoQuota(),
       this.collectCommandCodeQuota(),
+      this.collectClaudeCodeQuota(),
     ]);
-    return [...active, ...openai, ...opencodego, ...commandcode];
+    return [...active, ...openai, ...opencodego, ...commandcode, ...claude];
+  }
+
+  async collectClaudeCodeQuota() {
+    const targets = new Map();
+    const add = (entry, source) => {
+      const access = entry?.accessToken ?? entry?.access;
+      if (typeof access !== 'string' || !access.trim()) return;
+      const token = access.trim();
+      if (token.startsWith('sk-ant-api')) return;
+      const id = createHash('sha256').update(token).digest('hex');
+      const existing = targets.get(id);
+      if (existing) { existing.presets.push(source); return; }
+      targets.set(id, { token, expires: entry.expiresAt ?? entry.expires,
+        scopes: entry.scopes, id, presets: [source] });
+    };
+    const local = await readQuotaAuth(getClaudeCodeCredentialsPath());
+    add(local?.claudeAiOauth, '(Claude Code)');
+    const active = await readQuotaAuth(this.getAuthPath());
+    if (active?.anthropic?.type === 'oauth') add(active.anthropic, '(Current Active: Anthropic)');
+    for (const [name, auth] of await this.listPresetAuthData()) {
+      if (auth?.anthropic?.type === 'oauth') add(auth.anthropic, name);
+    }
+    // Never persist tokens, refresh them, or rotate another CLI's credentials.
+    for (const id of this._claudeQuotaCache.keys()) if (!targets.has(id)) this._claudeQuotaCache.delete(id);
+    return Promise.all([...targets.values()].map(async target => {
+      const result = { provider: 'claude', account_id: `claude-${target.id.slice(0, 12)}`,
+        presets: target.presets, daily: null, weekly: null, error: null };
+      if (target.expires != null && (!Number.isFinite(Number(target.expires)) || Number(target.expires) <= Date.now())) {
+        return { ...result, error: t('quota_claude_expired') };
+      }
+      // OpenCode omits scope metadata; in that case the API enforces permission.
+      if (target.scopes != null && (!Array.isArray(target.scopes) || !target.scopes.includes('user:profile'))) {
+        return { ...result, error: t('quota_claude_scope') };
+      }
+      const cached = this._claudeQuotaCache.get(target.id);
+      if (cached && cached.until > Date.now()) return { ...result, ...cached.usage };
+      let usage;
+      let delay = 60_000;
+      try {
+        const data = await this._requestJson('https://api.anthropic.com/api/oauth/usage', {
+          method: 'GET', headers: { Authorization: `Bearer ${target.token}`,
+            'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json', 'Content-Type': 'application/json' },
+        }, 10_000);
+        usage = { ...parseClaudeUsage(data), error: null };
+      } catch (error) {
+        const status = error.statusCode;
+        const key = status === 401 ? 'quota_claude_expired' : status === 403 ? 'quota_claude_scope'
+          : status === 429 ? 'quota_claude_rate_limited' : 'quota_claude_failed';
+        usage = { error: t(key) };
+        delay = 0;
+        if (status === 429) {
+          const retry = error.retryAfter;
+          const seconds = typeof retry === 'string' && /^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
+          delay = Math.max(60_000, Number.isFinite(seconds) ? seconds : 300_000);
+        }
+      }
+      if (delay > 0) this._claudeQuotaCache.set(target.id, { until: Date.now() + delay, usage });
+      else this._claudeQuotaCache.delete(target.id);
+      return { ...result, ...usage };
+    }));
   }
 
   async _getOpenCodeGoCredentials() {
@@ -1925,7 +2031,10 @@ function httpsRequest(url, options = {}, timeout = 10000) {
             resolve(data);
           }
         } else {
-          reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 100)}`));
+          const error = new Error(`HTTP ${res.statusCode}: ${data.slice(0, 100)}`);
+          error.statusCode = res.statusCode;
+          error.retryAfter = res.headers['retry-after'];
+          reject(error);
         }
       });
     });
