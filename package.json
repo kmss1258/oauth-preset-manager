@@ -19,7 +19,9 @@
     "@inquirer/prompts": "^7.3.2",
     "chalk": "^5.4.1",
     "cli-table3": "^0.6.5",
-    "ora": "^8.2.0"
+    "ora": "^8.2.0",
+    "string-width": "^4.2.3",
+    "strip-ansi": "^6.0.1"
   },
   "devDependencies": {
   },
