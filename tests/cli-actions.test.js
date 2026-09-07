@@ -195,14 +195,15 @@ test('peak countdown formatting uses readable minute and second units', () => {
   assert.equal(formatPeakCountdown(1), '00:00:01');
 });
 
-test('countdown tick updates only the saved countdown line', () => {
+test('countdown tick addresses only the fixed status row', () => {
   const writes = [];
   const output = { write: value => writes.push(value) };
   const now = new Date(Date.UTC(2026, 7, 17, 14, 5, 6));
 
   assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 🌙 · ${formatPeakStatus(getPeakState(now))} · Refresh in 12s`));
   updateQuotaCountdownLine(11, output, now);
-  assert.match(writes[0], new RegExp(`${ESC}8${ESC}\\[2K\\r  Current KST 23:05:06 🌙 · .* · Refresh in 11s${ESC}\\[u`));
+  assert.match(writes[0], new RegExp(`${ESC}\\[2;1H${ESC}\\[2K  Current KST 23:05:06 🌙 · .* · Refresh in 11s`));
+  assert.ok(!writes[0].includes('\n'));
 });
 
 test('active peak status border rotates in TTY output and stays off otherwise', () => {
@@ -322,6 +323,17 @@ test('timed quota keypress removes listener and restores raw and pause state', a
   });
 });
 
+test('quota input restores an initially idle stream so the CLI can exit', async () => {
+  await withFakeStdin(async () => {
+    process.stdin.paused = false;
+    process.stdin.readableFlowing = null;
+    const action = waitForQuotaKeypress(100);
+    process.stdin.emit('data', Buffer.from('q'));
+    assert.equal(await action, 'q');
+    assert.equal(process.stdin.isPaused(), true);
+  });
+});
+
 test('quota keypress wins a timeout race without a second resolution', async () => {
   await withFakeStdin(async () => {
     const actionPromise = waitForQuotaKeypress(20);
@@ -330,6 +342,26 @@ test('quota keypress wins a timeout race without a second resolution', async () 
     assert.equal(process.stdin.listenerCount('data'), 0);
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(process.stdin.listenerCount('data'), 0);
+  });
+});
+
+test('quota keys tolerate fragmented mobile input including UTF-8 and arrow sequences', async () => {
+  await withFakeStdin(async () => {
+    for (const [text, expected] of [['\u001b[B', 'next'], ['\u001b[A', 'previous'], ['\u001b[6~', 'next'], ['ㄱ', 'r']]) {
+      const action = waitForQuotaKeypress(1);
+      const bytes = Buffer.from(text);
+      process.stdin.emit('data', bytes.subarray(0, 1));
+      await new Promise(resolve => setTimeout(resolve, 10));
+      process.stdin.emit('data', bytes.subarray(1));
+      assert.equal(await action, expected);
+      assert.equal(process.stdin.listenerCount('data'), 0);
+    }
+    const escapeAction = waitForQuotaKeypress(500);
+    process.stdin.emit('data', Buffer.from('\u001b'));
+    assert.equal(await escapeAction, 'escape');
+    const interrupt = waitForQuotaKeypress(500);
+    process.stdin.emit('data', Buffer.from('xyz\u0003'));
+    assert.equal(await interrupt, 'q');
   });
 });
 

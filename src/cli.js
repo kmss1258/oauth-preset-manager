@@ -9,11 +9,41 @@ import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
+import { StringDecoder } from 'node:string_decoder';
 import { PresetManager, timeUntilReset } from './core.js';
 import { t } from './i18n.js';
 
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json');
+const stringWidth = require('string-width');
+const stripAnsi = require('strip-ansi');
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+const sgrPattern = `${String.fromCharCode(27)}\\[[0-9;]*m`;
+
+// Keep SGR colors, but never let account/error text move the terminal cursor.
+export function fitQuotaLine(text, width) {
+  const clean = String(text).split(new RegExp(`(${sgrPattern})`, 'g')).map(part =>
+    new RegExp(`^${sgrPattern}$`).test(part) ? part : Array.from(stripAnsi(part), char => {
+      const code = char.codePointAt(0);
+      return code < 32 || (code >= 127 && code <= 159) ? ' ' : char;
+    }).join('')).join('');
+  const plain = stripAnsi(clean);
+  const limit = Math.max(0, width);
+  if (stringWidth(plain) <= limit) return clean;
+  if (limit === 0) return '';
+  let result = '';
+  let used = 0;
+  for (const part of clean.split(new RegExp(`(${sgrPattern})`, 'g'))) {
+    if (new RegExp(`^${sgrPattern}$`).test(part)) { result += part; continue; }
+    for (const { segment } of graphemes.segment(part)) {
+      const size = stringWidth(segment);
+      if (used + size > limit - 1) return result + '…' + (clean.includes('\x1b') ? '\x1b[0m' : '');
+      result += segment;
+      used += size;
+    }
+  }
+  return result;
+}
 
 function gradientCyan(text) {
   return chalk.cyan.bold(text);
@@ -153,14 +183,21 @@ export function formatQuotaCountdownLine(seconds, now = new Date(), peakState = 
   const refreshSegment = seconds == null
     ? ''
     : ` ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
-  const line = `  ${chalk.cyan(t('quota_current_time', { time, icon }))} ${chalk.gray('·')} ${colorizePeakStatus(peakState, formatPeakStatus(peakState))}${refreshSegment}`;
-  return peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive)
+  let line = `  ${chalk.cyan(t('quota_current_time', { time, icon }))} ${chalk.gray('·')} ${colorizePeakStatus(peakState, formatPeakStatus(peakState))}${refreshSegment}`;
+  const width = options.width ?? (options.output?.columns ? options.output.columns - 1 : Infinity);
+  if (stringWidth(line) > width) {
+    const refresh = seconds == null ? '' : formatQuotaRefreshCountdown(seconds);
+    line = [refresh, `${time} KST`, formatPeakStatus(peakState)].filter(Boolean).join(' · ');
+    if (stringWidth(refresh) > width) line = seconds == null ? time : `↻ ${seconds}s`;
+  }
+  const bordered = peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive)
     ? peakBorder(line, epochSeconds(now))
     : line;
+  return fitQuotaLine(bordered, width);
 }
 
 export function updateQuotaCountdownLine(seconds, output = process.stdout, now = new Date()) {
-  output.write(`\u001b8\u001b[2K\r${formatQuotaCountdownLine(seconds, now, getPeakState(now), { output, interactive: true })}\u001b[u`);
+  output.write(`\u001b[2;1H\u001b[2K${formatQuotaCountdownLine(seconds, now, getPeakState(now), { output, interactive: true })}`);
 }
 
 export function normalizeQuotaActionKey(text) {
@@ -387,15 +424,23 @@ function printMenuSection() {
 }
 
 function enableEscToExit() {
-  if (!process.stdin.isTTY) return;
+  if (!process.stdin.isTTY) return () => {};
+  const wasRawMode = process.stdin.isRaw;
+  const wasPaused = process.stdin.isPaused() || process.stdin.readableFlowing === null;
   readline.emitKeypressEvents(process.stdin);
   if (process.stdin.setRawMode) process.stdin.setRawMode(true);
-  process.stdin.on('keypress', (_str, key) => {
+  const onKeypress = (_str, key) => {
     if (key?.name === 'escape') {
       console.log();
       process.exit(0);
     }
-  });
+  };
+  process.stdin.on('keypress', onKeypress);
+  return () => {
+    process.stdin.off('keypress', onKeypress);
+    if (process.stdin.setRawMode) process.stdin.setRawMode(Boolean(wasRawMode));
+    if (wasPaused) process.stdin.pause();
+  };
 }
 
 const PRO_PLAN_TYPES = new Set(['pro', 'prolite']);
@@ -459,7 +504,7 @@ function formatOpenCodeGoPercent(value) {
 export function formatPercent(value, options = {}) {
   if (value == null) return chalk.gray('-');
 
-  const width = 10;
+  const width = Math.max(1, Math.min(40, options.width ?? 10));
   const filledLen = Math.max(0, Math.min(width, Math.round(value / 100 * width)));
   const emptyLen = width - filledLen;
   const filled = '█'.repeat(filledLen);
@@ -543,7 +588,7 @@ function hasPresetLabel(result, label) {
 }
 
 function sortResultsByPresetName(results) {
-  const providerOrder = { openai: 0, opencodego: 1, commandcode: 2, google: 3 };
+  const providerOrder = { openai: 0, opencodego: 1, commandcode: 2, claude: 3, google: 4 };
   const entries = results.map((r, i) => ({
     r,
     i,
@@ -597,27 +642,6 @@ export function summarizeOpenAIRefreshResults(results) {
   };
 }
 
-function renderOpenAIRefreshResults(results) {
-  const summary = summarizeOpenAIRefreshResults(results);
-  if (!summary) return;
-
-  console.log(chalk.bold.cyan(`  🔐 ${t('openai_refresh_title')}`));
-  console.log(`  ${chalk.green(`${t('openai_refresh_success')}: ${summary.succeeded}`)}  ${chalk.red(`${t('openai_refresh_failed')}: ${summary.failed}`)}`);
-  console.log();
-
-  for (const result of results) {
-    const name = result.preset_name || '-';
-    if (result.success) {
-      console.log(`  ${chalk.green('✓')} ${chalk.yellow(name)}: ${t('openai_refresh_updated')}`);
-      continue;
-    }
-
-    const error = truncateText(result.error || t('openai_refresh_unknown_error'), 100);
-    console.log(`  ${chalk.red('✗')} ${chalk.yellow(name)}: ${t('openai_refresh_failed')} — ${chalk.red(error)}`);
-  }
-  console.log();
-}
-
 function formatAccountLabel(result) {
   const accountId = result?.account_id || '';
   const nickname = result?.nickname;
@@ -667,310 +691,8 @@ export function formatCommandCodeResetCell(result, window) {
   return lines.join('\n');
 }
 
-function renderOpenAIBanner(results, termWidth) {
-  const openaiItems = results.filter(r => r.provider === 'openai');
-  if (openaiItems.length === 0) return;
-
-  const current = openaiItems.find(r => hasPresetLabel(r, 'Current Active'));
-  const currentLabel = formatAccountLabel(current);
-
-  const presetSet = new Set();
-  for (const item of openaiItems) {
-    for (const label of item.presets || []) {
-      const name = extractPresetName(label);
-      if (name) presetSet.add(name);
-    }
-  }
-
-  const presetList = Array.from(presetSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  const presetsRaw = presetList.length ? presetList.join(', ') : '-';
-  const maxLen = Math.max(20, termWidth - 10);
-  const presetsLine = presetsRaw.length > maxLen ? `${presetsRaw.slice(0, maxLen - 3)}...` : presetsRaw;
-
-  printInfoBox(t('quota_openai_banner'), [
-    `${t('quota_openai_current')}: ${currentLabel}`,
-    `${t('quota_openai_presets')}: ${presetsLine}`,
-  ]);
-}
-
 function getTerminalWidth() {
   return process.stdout.columns || 80;
-}
-
-function calculateColWidths(totalWidth) {
-  const borderChars = 6;
-  const availableWidth = Math.max(60, totalWidth - borderChars);
-  
-  if (availableWidth < 80) {
-    return {
-      provider: 9,
-      daily: 18,
-      reset: 10,
-      weekly: 0,
-      weekly_reset: 0,
-      account: Math.min(30, Math.max(12, availableWidth - 38)),
-    };
-  } else if (availableWidth < 100) {
-    return {
-      provider: 11,
-      daily: 18,
-      reset: 12,
-      weekly: 18,
-      weekly_reset: 12,
-      account: Math.min(30, Math.max(12, availableWidth - 66)),
-    };
-  } else {
-    return {
-      provider: 13,
-      daily: 18,
-      reset: 12,
-      weekly: 18,
-      weekly_reset: 12,
-      account: Math.min(30, Math.max(12, availableWidth - 68)),
-    };
-  }
-}
-
-function renderQuotaCompact(results, termWidth, showGoogleDetail = false, countdownSeconds = null, now = new Date(), rootDiskLine = null) {
-  console.log();
-  console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
-  console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
-  console.log(chalk.dim('  ' + t('quota_wide_hint')));
-  console.log();
-  
-  const normalized = normalizeQuotaResults(results);
-  renderOpenAIBanner(normalized, termWidth);
-  if (rootDiskLine) console.log(chalk.dim(`  ${rootDiskLine}`));
-  if (countdownSeconds != null && process.stdout.isTTY) {
-    process.stdout.write('\u001b7');
-  }
-  console.log(formatQuotaCountdownLine(countdownSeconds, now, getPeakState(now), {
-    output: process.stdout,
-    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-  }));
-  console.log();
-  const openaiItems = normalized.filter(r => r.provider === 'openai');
-  const googleItems = normalized.filter(r => r.provider === 'google');
-  const goItems = normalized.filter(r => r.provider === 'opencodego');
-  const commandCodeItems = normalized.filter(r => r.provider === 'commandcode');
-  
-  const formatQuotaRow = (result, index) => {
-    const daily = result.daily || {};
-    const weekly = result.weekly;
-    const error = result.error;
-    const accountId = result.account_id || '';
-    const nickname = result.nickname || '';
-    
-    let providerLine = '';
-    if (result.provider === 'openai') {
-      providerLine = chalk.green.bold('openai');
-    } else if (result.provider === 'google') {
-      const label = daily.label || '';
-      providerLine = chalk.blue.bold('google') + (label ? chalk.dim(` ${label}`) : '');
-    } else if (result.provider === 'opencodego') {
-      providerLine = chalk.magenta.bold(t('quota_opencode_go'));
-    } else if (result.provider === 'commandcode') {
-      providerLine = formatCommandCodeProvider(result);
-    }
-    
-    const accountLine = result.provider === 'opencodego'
-      ? formatOpenCodeGoAccountCell(result)
-      : result.provider === 'commandcode'
-        ? formatCommandCodeAccountCell(result)
-        : nickname
-        ? chalk.yellow(nickname) + chalk.dim(` (${accountId})`)
-        : chalk.yellow(accountId);
-    
-    let quotaLine = '';
-    if (error) {
-      quotaLine = chalk.red(`  Error: ${error.slice(0, 60)}`);
-    } else {
-      const dailyPercent = daily.percent_remaining != null 
-        ? (daily.percent_remaining < 20 ? chalk.red : daily.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${daily.percent_remaining}%`.padStart(3))
-        : chalk.gray('-  ');
-      const dailyReset = daily.reset_time_iso 
-        ? chalk.cyan(timeUntilReset(daily.reset_time_iso).padStart(6))
-        : chalk.gray('-     ');
-      
-      const weeklyPercent = weekly?.percent_remaining != null
-        ? (weekly.percent_remaining < 20 ? chalk.red : weekly.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${weekly.percent_remaining}%`.padStart(3))
-        : chalk.gray('-  ');
-      const weeklyReset = weekly?.reset_time_iso
-        ? chalk.cyan(timeUntilReset(weekly.reset_time_iso).padStart(6))
-        : chalk.gray('-     ');
-      
-      quotaLine = `  ${chalk.dim('Daily:')} ${dailyPercent} ${dailyReset}  ${chalk.dim('Weekly:')} ${weeklyPercent} ${weeklyReset}`;
-    }
-    
-    console.log(`  ${index + 1}. ${providerLine}`);
-    console.log(`     ${accountLine.replace(/\n/g, '\n     ')}`);
-    console.log(quotaLine);
-    console.log();
-  };
-
-  for (const [i, result] of goItems.entries()) {
-    formatQuotaRow(result, i);
-  }
-
-  for (const [i, result] of commandCodeItems.entries()) {
-    formatQuotaRow(result, i + goItems.length);
-  }
-  
-  if (openaiItems.length > 0) {
-    console.log(chalk.bold.green('  ⚡ OpenAI'));
-    console.log();
-    for (const [i, result] of openaiItems.entries()) {
-      formatQuotaRow(result, i);
-    }
-  }
-  
-  if (googleItems.length > 0) {
-    if (openaiItems.length > 0 || goItems.length > 0) {
-      console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
-      console.log();
-    }
-    
-    if (showGoogleDetail) {
-      console.log(chalk.bold.blue(`  📦 Google (${googleItems.length} models)`));
-      console.log();
-      for (const [i, result] of googleItems.entries()) {
-        formatQuotaRow(result, i);
-      }
-    } else {
-      const accountId = googleItems[0]?.account_id || '';
-      const nickname = googleItems[0]?.nickname || '';
-      const accountDisplay = nickname 
-        ? chalk.yellow(nickname) + chalk.dim(` (${accountId})`)
-        : chalk.yellow(accountId);
-      const avgPercent = Math.round(
-        googleItems.reduce((sum, item) => sum + (item.daily?.percent_remaining || 0), 0) / googleItems.length
-      );
-      const lowModels = googleItems.filter(i => (i.daily?.percent_remaining || 100) < 50).map(i => i.daily?.label).filter(Boolean);
-      
-      console.log(chalk.bold.blue(`  📦 Google (${googleItems.length} models)`));
-      console.log(`     ${accountDisplay}`);
-      console.log(`     ${chalk.blue('Avg:')} ${avgPercent}%  ${lowModels.length > 0 ? chalk.yellow(`⚠️ Low: ${lowModels.slice(0, 3).join(', ')}`) : ''}`);
-      console.log();
-    }
-  }
-}
-
-function renderQuotaTable(results) {
-  if (!results || results.length === 0) {
-    console.log(chalk.dim(t('quota_no_results')));
-    return;
-  }
-
-  const deduped = normalizeQuotaResults(results);
-  const termWidth = getTerminalWidth();
-  
-  if (termWidth < 80) {
-    renderQuotaCompact(deduped, termWidth);
-    return;
-  }
-  
-  renderOpenAIBanner(deduped, termWidth);
-  if (deduped.length === 0) return;
-  const widths = calculateColWidths(termWidth);
-
-  const table = new Table({
-    head: [
-      chalk.cyan(t('quota_provider')),
-      chalk.cyan(t('quota_daily')),
-      chalk.cyan(t('quota_reset')),
-      chalk.cyan(t('quota_weekly')),
-      chalk.cyan(t('quota_weekly_reset')),
-      chalk.cyan(t('quota_account')),
-    ].map(h => chalk.bold(h)),
-    style: { 
-      head: [], 
-      border: ['gray'],
-      compact: true,
-    },
-    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account],
-    wordWrap: true,
-  });
-
-  const activeRows = [];
-  const presetRows = [];
-
-  for (const result of deduped) {
-    const daily = result.daily || {};
-    const weekly = result.weekly;
-    const accountId = result.account_id || '';
-    const nickname = result.nickname;
-    const accountDisplay = nickname
-      ? `${chalk.yellow(nickname)} ${chalk.dim(`(${accountId})`)}`
-      : chalk.yellow(accountId);
-    const accountCell = result.provider === 'opencodego'
-      ? formatOpenCodeGoAccountCell(result, { includeWeekly: widths.weekly === 0 })
-      : result.provider === 'commandcode'
-        ? formatCommandCodeAccountCell(result)
-        : accountDisplay;
-    const presetsList = result.presets || [];
-    const error = result.error;
-
-    let provider = result.provider || chalk.gray('-');
-    if (provider === 'google' && daily.label) {
-      provider = `${chalk.blue('google')} ${chalk.dim('(' + daily.label.slice(0, widths.provider - 8) + ')')}`;
-    } else if (provider === 'openai') {
-      provider = chalk.green('openai');
-    } else if (provider === 'opencodego') {
-      provider = chalk.magenta(t('quota_opencode_go'));
-    } else if (provider === 'commandcode') {
-      provider = formatCommandCodeProvider(result);
-    }
-
-    let row;
-    if (error) {
-      row = [
-        provider,
-        chalk.red(error.slice(0, widths.daily - 2)),
-        formatReset(daily.reset_time_iso),
-        chalk.gray('-'),
-        formatReset(weekly?.reset_time_iso),
-        accountCell,
-      ];
-    } else {
-      const rainbow = isRainbowQuotaEligible(result);
-      const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS : { rainbow };
-      const dailyData = result.provider === 'commandcode'
-        ? formatCommandCodeQuotaCell(result, daily, getCommandCodeDailyDetail(result))
-        : formatPercent(daily.percent_remaining, percentOptions);
-      const weeklyData = result.provider === 'commandcode'
-        ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
-        : formatPercent(weekly?.percent_remaining, percentOptions);
-      const dailyResetData = formatReset(daily.reset_time_iso);
-      const weeklyResetData = result.provider === 'commandcode'
-        ? formatCommandCodeResetCell(result, weekly)
-        : formatReset(weekly?.reset_time_iso);
-      
-      row = [
-        provider,
-        dailyData,
-        dailyResetData,
-        weeklyData,
-        weeklyResetData,
-        accountCell,
-      ];
-    }
-
-    if (presetsList.some(p => p.includes('Current Active') || p.includes('Antigravity'))) {
-      activeRows.push(row);
-    } else {
-      presetRows.push(row);
-    }
-  }
-
-  for (const row of activeRows) table.push(row);
-  if (activeRows.length > 0 && presetRows.length > 0) table.push([]);
-  for (const row of presetRows) table.push(row);
-
-  console.log();
-  console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
-  console.log();
-  console.log(table.toString());
-  console.log();
 }
 
 function printSwitchResult(result) {
@@ -1261,39 +983,16 @@ async function cmdSwitch(manager, name) {
   }
 }
 
-async function renderGoogleModelsDetail(results, termWidth) {
-  const googleItems = results.filter(r => r.provider === 'google');
-  if (googleItems.length === 0) return;
-  
-  console.log();
-  console.log(chalk.blue.bold('  📦 Google Models Detail'));
-  console.log(chalk.gray('  ' + '─'.repeat(termWidth - 4)));
-  console.log();
-  
-  googleItems.forEach((item, i) => {
-    const daily = item.daily || {};
-    const percent = daily.percent_remaining != null
-      ? (daily.percent_remaining < 20 ? chalk.red : daily.percent_remaining < 50 ? chalk.yellow : chalk.green)(`${daily.percent_remaining}%`.padStart(4))
-      : chalk.gray('-');
-    
-    const reset = daily.reset_time_iso
-      ? chalk.cyan(timeUntilReset(daily.reset_time_iso).padStart(6))
-      : chalk.gray('-'.padStart(6));
-    
-    const label = daily.label || 'unknown';
-    
-    console.log(`  ${i + 1}. ${chalk.blue(label.padEnd(18))} ${percent} ${reset}`);
-  });
-  console.log();
-}
-
 export function waitForQuotaKeypress(timeoutMs = null) {
   if (!process.stdin.isTTY) return Promise.resolve('return');
 
   return new Promise(resolve => {
     const wasRawMode = process.stdin.isRaw;
-    const wasPaused = process.stdin.isPaused();
+    const wasPaused = process.stdin.isPaused() || process.stdin.readableFlowing === null;
     let timeoutHandle = null;
+    let escapeHandle = null;
+    let pending = '';
+    const decoder = new StringDecoder('utf8');
     let settled = false;
 
     if (process.stdin.setRawMode && !wasRawMode) {
@@ -1302,6 +1001,8 @@ export function waitForQuotaKeypress(timeoutMs = null) {
 
     const cleanup = () => {
       process.stdin.off('data', onData);
+      process.stdout.off('resize', onResize);
+      clearTimeout(escapeHandle);
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
         timeoutHandle = null;
@@ -1322,284 +1023,216 @@ export function waitForQuotaKeypress(timeoutMs = null) {
     };
 
     const onData = (chunk) => {
-      const text = chunk.toString('utf8');
-
-      if (text === '\u001b') {
-        finish('escape');
-        return;
-      }
-
-      if (text === '\r' || text === '\n') {
-        finish('return');
-        return;
-      }
-
-      const key = normalizeQuotaActionKey(text);
-      if (key) {
-        finish(key);
+      pending += decoder.write(chunk);
+      if (pending.includes('\u0003')) return finish('q');
+      const sequences = { '\u001b[B': 'next', '\u001b[6~': 'next', '\u001b[A': 'previous', '\u001b[5~': 'previous' };
+      while (pending) {
+        if (pending.startsWith('\u001b')) {
+          const complete = Object.keys(sequences).find(sequence => pending.startsWith(sequence));
+          if (complete) return finish(sequences[complete]);
+          if (Object.keys(sequences).some(sequence => sequence.startsWith(pending))) {
+            clearTimeout(escapeHandle);
+            escapeHandle = setTimeout(() => finish(pending === '\u001b' ? 'escape' : 'timeout'), 150);
+            return;
+          }
+        }
+        const char = Array.from(pending)[0];
+        pending = pending.slice(char.length);
+        if (char === '\r' || char === '\n') return finish('return');
+        if (char === 'j') return finish('next');
+        if (char === 'k') return finish('previous');
+        const key = normalizeQuotaActionKey(char);
+        if (key) return finish(key);
       }
     };
 
+    const onResize = () => finish('resize');
+    process.stdout.on('resize', onResize);
     process.stdin.on('data', onData);
     process.stdin.resume();
     if (timeoutMs != null) {
-      timeoutHandle = setTimeout(() => finish('timeout'), Math.max(0, timeoutMs));
+      timeoutHandle = setTimeout(() => {
+        if (pending || decoder.lastNeed) timeoutHandle = setTimeout(() => finish('timeout'), 150);
+        else finish('timeout');
+      }, Math.max(0, timeoutMs));
     }
   });
 }
 
-async function renderQuotaTableWithToggle(results, showGoogle = true, countdownSeconds = null, now = new Date(), rootDiskLine = null) {
-  const termWidth = getTerminalWidth();
-  const normalized = normalizeQuotaResults(results);
-  if (!normalized.length) {
-    console.log(chalk.dim(t('quota_no_results')));
-    return;
-  }
-  const googleItems = normalized.filter(r => r.provider === 'google');
-  
-  console.log();
-  console.log(chalk.bold.cyan('  📊 ' + t('quota_title')));
-  console.log();
-  renderOpenAIBanner(normalized, termWidth);
-  if (normalized.length === 0) return;
-  
-  const widths = calculateColWidths(termWidth);
-  
-  const table = new Table({
-    head: [
-      chalk.cyan(t('quota_provider')),
-      chalk.cyan(t('quota_daily')),
-      chalk.cyan(t('quota_reset')),
-      chalk.cyan(t('quota_weekly')),
-      chalk.cyan(t('quota_weekly_reset')),
-      chalk.cyan(t('quota_account')),
-    ].map(h => chalk.bold(h)),
-    style: { 
-      head: [], 
-      border: ['gray'],
-      compact: true,
-    },
-    colWidths: [widths.provider, widths.daily, widths.reset, widths.weekly, widths.weekly_reset, widths.account],
-    wordWrap: true,
-  });
-  
-  const activeRows = [];
-  const presetRows = [];
-  const rowItems = getQuotaTableRowItems(normalized, showGoogle);
-
-  rowItems.forEach(result => {
-    const daily = result.daily || {};
-    const weekly = result.weekly;
-    const accountId = result.account_id || '';
-    const nickname = result.nickname;
-    const accountDisplay = nickname
-      ? `${chalk.yellow(nickname)} ${chalk.dim(`(${accountId})`)}`
-      : chalk.yellow(accountId);
-    const accountCell = result.provider === 'opencodego'
-      ? formatOpenCodeGoAccountCell(result, { includeWeekly: widths.weekly === 0 })
-      : result.provider === 'commandcode'
-        ? formatCommandCodeAccountCell(result)
-        : accountDisplay;
-    const presetsList = result.presets || [];
-    const error = result.error;
-
-    let provider = result.provider || chalk.gray('-');
-    if (provider === 'google') {
-      provider = chalk.blue('google');
-      if (daily.label) {
-        provider = `${chalk.blue('google')} ${chalk.dim('(' + daily.label.slice(0, widths.provider - 8) + ')')}`;
+export function buildQuotaFrame(results, options = {}) {
+  const { columns = 80, rows = 24, interactive = false, showGoogle = false,
+    page = 0, seconds = null, now = new Date(), rootDiskLine = null, warning = null } = options;
+  // Reserve the last column/row: writing the bottom-right cell can scroll a TTY.
+  const width = Math.max(0, columns - 1);
+  const body = [];
+  const accountStarts = [];
+  const items = getQuotaTableRowItems(normalizeQuotaResults(results), showGoogle);
+  const account = result => {
+    const label = result.provider === 'commandcode' ? formatCommandCodeAccountCell(result) : formatAccountLabel(result);
+    const details = result.provider === 'commandcode' ? [getCommandCodeDailyDetail(result), getCommandCodeWeeklyDetail(result),
+      result.command_code_usage?.total_cost == null ? '' : `$${result.command_code_usage.total_cost.toFixed(2)} used`] : [];
+    return [label, ...(result.presets || []), ...details.filter(Boolean)].join('\n');
+  };
+  const windows = result => [
+    [result.provider === 'claude' ? '5h' : 'D', result.daily],
+    ['W', result.weekly],
+    ...(result.provider === 'opencodego' ? [['M', { percent_remaining: result.monthly_percent, reset_time_iso: result.monthly_reset_iso }]] : []),
+    ...(result.extra_windows || []).map(window => [window.label, window]),
+  ];
+  if (columns >= 100) {
+    const accountWidth = width - 83;
+    const table = new Table({
+      head: [t('quota_provider'), t('quota_daily'), t('quota_daily_reset'), t('quota_weekly'), t('quota_weekly_reset'), t('quota_account')].map(text => chalk.cyan.bold(text)),
+      colWidths: [14, 18, 12, 18, 12, width - 81],
+      style: { head: [], border: ['gray'], compact: true }, wordWrap: true,
+    });
+    for (const result of items) {
+      const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
+        : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
+      const details = windows(result).slice(2).map(([label, window]) =>
+        `${label}\n${formatPercent(window?.percent_remaining, { ...percentOptions, width: Math.min(10, accountWidth - 5) })}\n${formatReset(window?.reset_time_iso)}`);
+      table.push([
+        result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider,
+        result.error ? chalk.red(result.error) : formatPercent(result.daily?.percent_remaining, percentOptions),
+        formatReset(result.daily?.reset_time_iso), formatPercent(result.weekly?.percent_remaining, percentOptions),
+        formatReset(result.weekly?.reset_time_iso), [account(result), ...details].join('\n').split('\n').map(line => fitQuotaLine(line, accountWidth)).join('\n'),
+      ].map(cell => String(cell).split('\n').map(line => fitQuotaLine(line, Infinity)).join('\n')));
+    }
+    if (items.length) body.push(...table.toString().split('\n'));
+  } else {
+    for (const result of items) {
+      accountStarts.push(body.length);
+      const provider = { openai: 'OpenAI', claude: 'Claude', opencodego: 'OpenCode Go', commandcode: 'Command Code', google: 'Google' }[result.provider] || result.provider;
+      body.push(chalk.cyan.bold(`● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`));
+      body.push(...account(result).split('\n').map(line => chalk.yellow(line)));
+      if (result.error) body.push(chalk.red(result.error));
+      else for (const [label, window] of windows(result)) {
+        if (!window) continue;
+        const shortLabel = fitQuotaLine(label, Math.max(2, Math.min(8, width - 9))).padEnd(2);
+        const barWidth = Math.max(1, Math.min(14, width - stringWidth(shortLabel) - 7));
+        const bar = formatPercent(window.percent_remaining, { width: barWidth,
+          rainbow: isRainbowQuotaEligible(result),
+          fillColor: result.provider === 'opencodego' ? chalk.cyan : result.provider === 'commandcode' ? chalk.magenta : chalk.green });
+        const line = `${chalk.dim(shortLabel)} ${bar}`;
+        const reset = formatReset(window.reset_time_iso);
+        if (stringWidth(`${line} · ${reset}`) <= width) body.push(`${line} · ${reset}`);
+        else body.push(line, `  ↻ ${reset}`);
       }
-    } else if (provider === 'openai') {
-      provider = chalk.green('openai');
-    } else if (provider === 'opencodego') {
-      provider = chalk.magenta(t('quota_opencode_go'));
+      body.push('');
     }
-
-    let row;
-    if (error) {
-      row = [
-        provider,
-        chalk.red(error.slice(0, widths.daily - 2)),
-        formatReset(daily.reset_time_iso),
-        chalk.gray('-'),
-        formatReset(weekly?.reset_time_iso),
-        accountCell,
-      ];
-    } else {
-      const rainbow = isRainbowQuotaEligible(result);
-      const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS : { rainbow };
-       const dailyData = result.provider === 'commandcode'
-         ? formatCommandCodeQuotaCell(result, daily, getCommandCodeDailyDetail(result))
-         : formatPercent(daily.percent_remaining, percentOptions);
-       const weeklyData = result.provider === 'commandcode'
-         ? formatCommandCodeQuotaCell(result, weekly, getCommandCodeWeeklyDetail(result))
-         : formatPercent(weekly?.percent_remaining, percentOptions);
-      const dailyResetData = formatReset(daily.reset_time_iso);
-      const weeklyResetData = result.provider === 'commandcode'
-        ? formatCommandCodeResetCell(result, weekly)
-        : formatReset(weekly?.reset_time_iso);
-      const weeklyDisplay = result.provider !== 'google'
-        ? weeklyData
-        : chalk.gray('-');
-      const weeklyResetDisplay = result.provider !== 'google'
-        ? weeklyResetData
-        : chalk.gray('-');
-
-      row = [
-        provider,
-        dailyData,
-        dailyResetData,
-        weeklyDisplay,
-        weeklyResetDisplay,
-        accountCell,
-      ];
-    }
-
-    if (presetsList.some(p => p.includes('Current Active') || p.includes('Antigravity'))) {
-      activeRows.push(row);
-    } else {
-      presetRows.push(row);
-    }
-  });
-
-  for (const row of activeRows) table.push(row);
-  if (activeRows.length > 0 && presetRows.length > 0) table.push([]);
-  for (const row of presetRows) table.push(row);
-
-  if (rootDiskLine) console.log(chalk.dim(`  ${rootDiskLine}`));
-  if (countdownSeconds != null && process.stdout.isTTY) {
-    process.stdout.write('\u001b7');
   }
-  console.log(formatQuotaCountdownLine(countdownSeconds, now, getPeakState(now), {
-    output: process.stdout,
-    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-  }));
-  console.log();
-  console.log(table.toString());
-  console.log();
-  
-  if (googleItems.length > 0) {
-    if (showGoogle) {
-      console.log(chalk.yellow(`  📂 Google models: ${googleItems.length} models shown`));
-    } else {
-      console.log(chalk.blue(`  📦 Google models: ${googleItems.length} models hidden`));
+  if (!items.length) body.push(t('quota_no_results'));
+  const hidden = results.filter(result => result.provider === 'google').length;
+  if (!showGoogle && hidden) body.push(`Google: ${hidden} [g]`);
+  if (warning) body.unshift(chalk.red(warning));
+  const refreshSummary = summarizeOpenAIRefreshResults(options.refreshResults);
+  if (refreshSummary) {
+    body.push(`${t('openai_refresh_title')}: ${refreshSummary.succeeded}/${refreshSummary.total}`);
+    for (const result of options.refreshResults) {
+      body.push((result.success ? chalk.green : chalk.red)(`${result.preset_name}: ${result.success ? t('openai_refresh_updated') : result.error || t('openai_refresh_failed')}`));
     }
-    console.log();
   }
+  while (body.at(-1) === '') body.pop();
+  const header = [
+    (warning ? chalk.yellow('! ') : '') + chalk.cyan.bold(width >= 65 ? `OPM · ${t('quota_title')}` : 'OPM') + (rootDiskLine ? `  ${rootDiskLine}` : ''),
+    formatQuotaCountdownLine(seconds, now, getPeakState(now), { width, output: options.output, interactive }),
+  ];
+  if (!interactive) return { lines: [...header, ...body].map(line => fitQuotaLine(line, width)), page: 0, pages: 1 };
+  const height = Math.max(0, rows - 1);
+  if (height < 4) return { lines: [header[1], '[q]'].slice(0, height).map(line => fitQuotaLine(line, width)), page: 0, pages: 1 };
+  const pageSize = height - header.length - 1;
+  const boundaries = accountStarts.map(index => index > 0 && warning ? index + 1 : index);
+  const chunks = [];
+  for (let start = 0; start < body.length;) {
+    let end = Math.min(body.length, start + pageSize);
+    // Keep mobile account groups together whenever a whole group fits.
+    if (end < body.length) end = boundaries.filter(index => index > start && index <= end).at(-1) ?? end;
+    chunks.push(body.slice(start, end));
+    start = end;
+    while (body[start] === '') start++;
+  }
+  const pages = Math.max(1, chunks.length);
+  const currentPage = Math.max(0, Math.min(pages - 1, page));
+  const visible = chunks[currentPage] || [];
+  while (visible.length < pageSize) visible.push('');
+  const navigation = pages > 1 ? `${currentPage + 1}/${pages} [j/k] ` : '';
+  const footer = width >= 76 ? `${navigation}${QUOTA_FOOTER_TEXT.trim()}`
+    : width >= 24 ? `${navigation}[r] [g] [q]`
+      : width >= 16 ? `${currentPage + 1}/${pages} j/k r g q` : '[q] j/k';
+  return { lines: [...header, ...visible, chalk.dim(footer)].map(line => fitQuotaLine(line, width)), page: currentPage, pages };
 }
 
-async function cmdQuota(manager) {
-  console.clear();
-  printHeader();
-  console.log(chalk.yellow.bold('  ⏳ ' + t('loading_quota')));
-  console.log();
-  
+export async function cmdQuota(manager) {
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const restoreTerminal = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
+  if (interactive) {
+    process.once('exit', restoreTerminal);
+    process.stdout.write('\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J');
+  }
   try {
-    let cacheWarning = null;
-    const initialResults = await manager.collectAllQuota();
-    let refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
-    try {
-      await manager.cacheQuotaResults(initialResults);
-    } catch (error) {
-      cacheWarning = error.message;
-    }
-    let normalizedResults = normalizeQuotaResults(initialResults);
-    const termWidth = getTerminalWidth();
-    const interactive = process.stdin.isTTY && process.stdout.isTTY;
-    let showGoogleDetail = false;
-    let showGoogleInTable = false;
-    
+    process.stdout.write(fitQuotaLine(t('loading_quota'), getTerminalWidth() - 1) + (interactive ? '' : '\n'));
+    let results;
+    let deadline;
+    let warning;
+    const refresh = async () => {
+      results = await manager.collectAllQuota();
+      deadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
+      warning = null;
+      try { await manager.cacheQuotaResults(results); }
+      catch { warning = t('quota_cache_failed'); }
+    };
+    await refresh();
+    let showGoogle = false;
+    let page = 0;
     let needsRender = true;
+    let dimensions = '';
     while (true) {
+      const columns = getTerminalWidth();
+      const rows = process.stdout.rows || 24;
+      const currentDimensions = `${columns}x${rows}`;
+      if (currentDimensions !== dimensions) needsRender = true;
       if (needsRender) {
-        const tickNow = new Date();
-        console.clear();
-        printHeader();
-
-        renderOpenAIRefreshResults(manager.lastOpenAIRefreshResults);
         const rootDiskLine = await getRootDiskLine();
-
-        const googleCount = normalizedResults.filter(r => r.provider === 'google').length;
-        const countdownSeconds = interactive
-          ? getQuotaRefreshCountdownSeconds(refreshDeadline, tickNow.getTime())
-          : null;
-
-        if (termWidth >= 80) {
-          await renderQuotaTableWithToggle(normalizedResults, showGoogleInTable, countdownSeconds, tickNow, rootDiskLine);
-        } else {
-          renderQuotaCompact(normalizedResults, termWidth, showGoogleDetail, countdownSeconds, tickNow, rootDiskLine);
-          if (showGoogleDetail && googleCount > 0) {
-            await renderGoogleModelsDetail(normalizedResults, termWidth);
-          }
-        }
-
-        if (cacheWarning) {
-          console.log(chalk.red(`  ⚠ Quota cache save failed: ${cacheWarning}`));
-          console.log();
-        }
-
-        if (!interactive) {
-          break;
-        }
-
-        console.log(chalk.dim(QUOTA_FOOTER_TEXT));
-        process.stdout.write('\u001b[s');
+        if (`${getTerminalWidth()}x${process.stdout.rows || 24}` !== currentDimensions) continue;
+        const frame = buildQuotaFrame(results, { columns, rows, interactive, showGoogle, page, warning,
+          seconds: interactive ? getQuotaRefreshCountdownSeconds(deadline) : null,
+          rootDiskLine, output: process.stdout, refreshResults: manager.lastOpenAIRefreshResults });
+        page = frame.page;
+        if (interactive) process.stdout.write('\x1b[H\x1b[2J' + frame.lines.join('\r\n'));
+        else { process.stdout.write(frame.lines.join('\n') + '\n'); break; }
+        dimensions = currentDimensions;
         needsRender = false;
       }
-
-      const waitMs = Math.min(1000, Math.max(0, refreshDeadline - Date.now()));
-      const action = await waitForQuotaKeypress(waitMs);
-
-      if (action === 'timeout') {
-        const tickNow = Date.now();
-        if (tickNow < refreshDeadline) {
-          if (termWidth < 80 || normalizedResults.length > 0) {
-            const tickDate = new Date(tickNow);
-            updateQuotaCountdownLine(getQuotaRefreshCountdownSeconds(refreshDeadline, tickNow), process.stdout, tickDate);
-          }
-          continue;
-        }
-        const refreshedResults = await manager.collectAllQuota();
-        refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
-        cacheWarning = null;
-        try {
-          await manager.cacheQuotaResults(refreshedResults);
-        } catch (error) {
-          cacheWarning = error.message;
-        }
-        normalizedResults = normalizeQuotaResults(refreshedResults);
-        needsRender = true;
+      const action = await waitForQuotaKeypress(Math.min(1000, Math.max(0, deadline - Date.now())));
+      if (action === 'resize') { needsRender = true; continue; }
+      if (action === 'timeout' && Date.now() < deadline) {
+        // Absolute addressing avoids saved-cursor ambiguity and terminal reflow.
+        if (`${getTerminalWidth()}x${process.stdout.rows || 24}` !== dimensions) { needsRender = true; continue; }
+        if (rows >= 5) {
+          const now = new Date();
+          updateQuotaCountdownLine(getQuotaRefreshCountdownSeconds(deadline), process.stdout, now);
+        } else needsRender = true;
         continue;
       }
-
-      if (action === 'r') {
-        const refreshedResults = await manager.collectAllQuota();
-        refreshDeadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
-        cacheWarning = null;
-        try {
-          await manager.cacheQuotaResults(refreshedResults);
-        } catch (error) {
-          cacheWarning = error.message;
+      if (action === 'r' || action === 'timeout') {
+        try { await refresh(); }
+        catch {
+          warning = t('quota_refresh_failed');
+          deadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
+          page = 0;
         }
-        normalizedResults = normalizeQuotaResults(refreshedResults);
-        needsRender = true;
-        continue;
       }
-
-      if (action === 'g') {
-        if (termWidth >= 80) {
-          showGoogleInTable = !showGoogleInTable;
-        } else {
-          showGoogleDetail = !showGoogleDetail;
-        }
-        needsRender = true;
-        continue;
-      }
-
-      break;
+      else if (action === 'g') { showGoogle = !showGoogle; page = 0; }
+      else if (action === 'next') page++;
+      else if (action === 'previous') page--;
+      else break;
+      needsRender = true;
     }
-  } catch (e) {
-    console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
+  } finally {
+    if (interactive) {
+      process.off('exit', restoreTerminal);
+      restoreTerminal();
+    }
   }
 }
 
@@ -1786,49 +1419,52 @@ async function interactiveMode(manager) {
 }
 
 async function main() {
-  enableEscToExit();
-  const manager = new PresetManager();
-  await manager.init();
-
   const args = process.argv.slice(2);
+  const cleanupInput = !['q', 'quota'].includes(args[0]) ? enableEscToExit() : () => {};
+  try {
+    const manager = new PresetManager();
+    await manager.init();
 
-  if (!args.length) {
-    await interactiveMode(manager);
-    return;
-  }
+    if (!args.length) {
+      await interactiveMode(manager);
+      return;
+    }
 
-  const command = args[0];
+    const command = args[0];
 
-  switch (command) {
-    case 'save':
-      if (args.length < 2) {
-        console.log(chalk.red('  ✗ Usage: opm save <preset-name>'));
-      } else {
-        await cmdSave(manager, args[1]);
-      }
-      break;
+    switch (command) {
+      case 'save':
+        if (args.length < 2) {
+          console.log(chalk.red('  ✗ Usage: opm save <preset-name>'));
+        } else {
+          await cmdSave(manager, args[1]);
+        }
+        break;
 
-    case 'switch':
-      if (args.length < 2) {
-        console.log(chalk.red('  ✗ Usage: opm switch <preset-name>'));
-      } else {
-        await cmdSwitch(manager, args[1]);
-      }
-      break;
+      case 'switch':
+        if (args.length < 2) {
+          console.log(chalk.red('  ✗ Usage: opm switch <preset-name>'));
+        } else {
+          await cmdSwitch(manager, args[1]);
+        }
+        break;
 
-    case 'q':
-    case 'quota':
-      await cmdQuota(manager);
-      break;
+      case 'q':
+      case 'quota':
+        await cmdQuota(manager);
+        break;
 
-    default:
-      console.log(chalk.red(`  ✗ Unknown command: ${command}`));
-      console.log();
-      console.log(chalk.bold('  Usage:'));
-      console.log('    opm              ' + chalk.dim('# Interactive mode'));
-      console.log('    opm save <name>  ' + chalk.dim('# Save current auth as preset'));
-      console.log('    opm switch <name> ' + chalk.dim('# Switch to preset'));
-      console.log('    opm quota         ' + chalk.dim('# Show OAuth quota'));
+      default:
+        console.log(chalk.red(`  ✗ Unknown command: ${command}`));
+        console.log();
+        console.log(chalk.bold('  Usage:'));
+        console.log('    opm              ' + chalk.dim('# Interactive mode'));
+        console.log('    opm save <name>  ' + chalk.dim('# Save current auth as preset'));
+        console.log('    opm switch <name> ' + chalk.dim('# Switch to preset'));
+        console.log('    opm quota         ' + chalk.dim('# Show OAuth quota'));
+    }
+  } finally {
+    cleanupInput();
   }
 }
 
