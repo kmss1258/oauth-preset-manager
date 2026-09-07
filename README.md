@@ -27,9 +27,11 @@ opm
 ## 🔥 Features
 
 - **Instant Switching**: Swap `auth.json` configurations with a single command.
-- **Quota Table**: View quota usage in a Rich table for OpenAI & Google (Antigravity) accounts.
+- **Quota View**: View quota usage for OpenAI, Claude OAuth, Google (Antigravity), OpenCode Go, and Command Code.
   - Supports detailed breakdown for Antigravity models (Flash, Pro, Claude).
   - Visual progress bars and reset timers.
+  - Mobile/narrow terminals use compact account rows with adaptive bars. At 100+ columns, the full table is shown. Window resizing updates the layout without fetching again.
+  - Short screens are paginated: `j`/`k`, down/up arrows, or Page Down/Page Up. The countdown stays fixed; `g` toggles Google details, and `q`, Esc, Enter, or Ctrl-C exits. Interactive mode restores the previous terminal screen on exit.
   - `opm q` refreshes automatically every 60 seconds and shows the next-refresh countdown above the table.
   - Press `r` or `ㄱ` in `opm q` to refresh immediately without changing the current quota layout.
   - Shows fixed UTC peak periods Monday-Friday only (01:00–04:00 and 06:00–10:00 UTC; 10:00–13:00 and 15:00–19:00 KST), with a `HH:MM:SS` countdown one hour before and throughout each peak window. Weekends are off. Active peaks use a rotating pastel border in interactive terminals.
@@ -86,8 +88,8 @@ opm quota
 # or
 opm q
 ```
-> Shows usage for all presets + currently active Antigravity session.
-> Renders a Rich table with provider, quota, reset, account, preset, and error columns.
+> Shows usage for supported preset credentials and detected local provider sessions.
+> Shows a full table on wide terminals, or compact progress bars on mobile/narrow terminals. Very small heights show only status/exit controls until enlarged. Piped output is a single, unpaginated snapshot without cursor controls.
 > The interactive quota screen refreshes automatically every 60 seconds and shows the next refresh above the table. Press `r` or `ㄱ` to refresh immediately.
 > Peak periods are fixed Monday-Friday schedules: 01:00–04:00 UTC / 10:00–13:00 KST and 06:00–10:00 UTC / 15:00–19:00 KST. Weekends are off. The peak countdown starts one hour before each period and uses `HH:MM:SS`; the pastel border is only shown during active peaks in TTY mode.
 
@@ -115,6 +117,22 @@ Common auth file locations:
 - `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go workspace ID (`wrk_...`) for `opm q` usage data
 - `OPENCODE_GO_AUTH_COOKIE`: `auth` cookie from `opencode.ai` for OpenCode Go usage data
 - `OPM_COMMAND_CODE_AUTH_PATH`: Optional Command Code credential path override
+- `CLAUDE_CONFIG_DIR`: Claude Code profile directory (default `~/.claude`)
+- `OPM_CLAUDE_AUTH_PATH`: Optional Claude Code `.credentials.json` path override; takes precedence over `CLAUDE_CONFIG_DIR`
+
+### Claude OAuth quota
+
+`opm q` detects `claudeAiOauth.accessToken` in the Claude Code credential file, plus `anthropic` entries with `type: "oauth"` in active OpenCode auth and saved presets. Identical access tokens share one request; API keys are ignored. No Claude credentials means no Claude row.
+
+- Shows **remaining** 5-hour and weekly quota, plus model-specific weekly/extra-usage percentages when returned. The Claude table row labels its first window `5h` (not a calendar day).
+- Reads the internal `https://api.anthropic.com/api/oauth/usage` endpoint with `anthropic-beta: oauth-2025-04-20`. Supports both legacy windows and newer `limits[]` responses. This is not a public stable Anthropic API.
+- Requires usage/profile permission (`user:profile`); inference-only tokens may not work. Expired/unauthorized credentials show a re-login message. OPM **never refreshes, copies, or rewrites Claude credentials** as part of quota collection.
+- Successful reads are cached in memory for 60 seconds. HTTP 429 honors `Retry-After` (five-minute fallback); manual refresh cannot bypass that cooldown. Credentials are re-read each collection, so a login/token rotation is picked up automatically.
+- macOS Keychain-only credentials are **not read automatically**. Use an existing file-backed Claude profile or an OpenCode Anthropic OAuth entry. Keep credential files private (`chmod 600`); symlinked local Claude credential files are ignored.
+
+References: [CodexBar OAuth fetcher/schema](https://github.com/steipete/CodexBar/blob/170a4d41c6d69e2bb25daac4fb088a92de2f9bc4/Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift), [Headroom client](https://github.com/headroomlabs-ai/headroom/blob/e67b3c8a29443a60d6b0018fb22f525c5cd7e709/headroom/subscription/client.py), [Claude Code authentication](https://code.claude.com/docs/en/authentication).
+
+### OpenCode Go session
 
 OpenCode Go usage is read from its workspace page and shows the 5-hour, weekly, and monthly windows. Its API key enables Go models, but the usage page currently requires the browser `auth` cookie as well.
 
