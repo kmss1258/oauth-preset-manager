@@ -31,7 +31,7 @@ test('replaces selected eligible entries, preserves unrelated services, and excl
     },
     selected: {
       openai: { type: 'oauth', access: 'old-access', refresh: 'old-refresh' },
-      codex: { type: 'oauth', access: 'old-codex', refresh: 'old-codex-refresh' },
+      google: { type: 'oauth', access: 'old-google', refresh: 'old-google-refresh' },
       keep: { type: 'api', key: 'keep' },
     },
     unselected: { openai: { type: 'oauth', access: 'untouched', refresh: 'untouched' } },
@@ -52,7 +52,7 @@ test('replaces selected eligible entries, preserves unrelated services, and excl
       keep: { type: 'api', key: 'keep' },
       openai: { type: 'oauth', access: 'source-access', refresh: 'source-refresh' },
       commandcode: { type: 'oauth', access: 'command-access', refresh: 'command-refresh' },
-      codex: { type: 'oauth', access: 'old-codex', refresh: 'old-codex-refresh' },
+      google: { type: 'oauth', access: 'old-google', refresh: 'old-google-refresh' },
     });
     assert.deepEqual(unselected, { openai: { type: 'oauth', access: 'untouched', refresh: 'untouched' } });
     assert.equal(await readFile(result.changed[0].backup_path, 'utf8'), selectedBytes);

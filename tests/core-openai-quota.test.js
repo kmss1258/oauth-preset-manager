@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { PresetManager } from '../src/core.js';
+import { t } from '../src/i18n.js';
 
 function makeJwt(payload) {
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -51,7 +52,7 @@ test('expired OpenAI tokens keep auth plan metadata but remain ineligible for ra
   assert.equal(result.error, 'Token expired');
 });
 
-test('collectAllQuota refreshes expired OpenAI presets in parallel and persists rotated tokens', async () => {
+test('collectAllQuota refreshes expired OpenAI presets in parallel and persists rotated tokens', { timeout: 5000 }, async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'opm-openai-refresh-'));
 
   try {
@@ -84,13 +85,16 @@ test('collectAllQuota refreshes expired OpenAI presets in parallel and persists 
     const refreshCalls = [];
     let activeRefreshes = 0;
     let maxActiveRefreshes = 0;
+    let releaseRefreshes;
+    const bothRefreshesStarted = new Promise(resolve => { releaseRefreshes = resolve; });
     manager._requestJson = async (url, options) => {
       if (url.endsWith('/oauth/token')) {
         const refresh = new URLSearchParams(options.body).get('refresh_token');
         refreshCalls.push(refresh);
         activeRefreshes += 1;
         maxActiveRefreshes = Math.max(maxActiveRefreshes, activeRefreshes);
-        await new Promise(resolve => setTimeout(resolve, 20));
+        if (refreshCalls.length === 2) releaseRefreshes();
+        await bothRefreshesStarted;
         activeRefreshes -= 1;
         return {
           access_token: `access-${refresh}`,
@@ -194,7 +198,7 @@ test('collectAllQuota reports preset refresh failures without overwriting creden
         preset_name: 'rejected',
         is_active: false,
         success: false,
-        error: 'HTTP 400: {"error":"invalid_grant"}',
+        error: t('sync_refresh_uncertain'),
       },
     ]);
 

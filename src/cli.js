@@ -423,16 +423,29 @@ function printMenuSection() {
   console.log();
 }
 
-function enableEscToExit() {
+let pendingMutations = 0;
+
+async function withMutationGuard(action) {
+  const ignoreInterrupt = () => {};
+  pendingMutations++;
+  process.on('SIGINT', ignoreInterrupt);
+  try { return await action(); }
+  finally {
+    process.off('SIGINT', ignoreInterrupt);
+    pendingMutations--;
+  }
+}
+
+export function enableEscToExit() {
   if (!process.stdin.isTTY) return () => {};
   const wasRawMode = process.stdin.isRaw;
   const wasPaused = process.stdin.isPaused() || process.stdin.readableFlowing === null;
   readline.emitKeypressEvents(process.stdin);
   if (process.stdin.setRawMode) process.stdin.setRawMode(true);
   const onKeypress = (_str, key) => {
-    if (key?.name === 'escape') {
+    if (key?.name === 'escape' && !pendingMutations) {
       console.log();
-      process.exit(0);
+      process.exit(process.exitCode || 0);
     }
   };
   process.stdin.on('keypress', onKeypress);
@@ -645,8 +658,7 @@ export function summarizeOpenAIRefreshResults(results) {
 function formatAccountLabel(result) {
   const accountId = result?.account_id || '';
   const nickname = result?.nickname;
-  if (nickname && accountId) return `${nickname} (${accountId})`;
-  return nickname || accountId || '-';
+  return accountId || nickname || '-';
 }
 
 export function formatOpenCodeGoAccountCell(result, options = {}) {
@@ -660,9 +672,12 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
 }
 
 export function formatCommandCodeAccountCell(result) {
-  const account = chalk.cyan(result?.nickname || result?.account_id || '-');
+  const account = chalk.cyan(fitQuotaLine(result?.nickname || result?.account_id || '-', Infinity));
   const tokens = result?.command_code_usage?.total_tokens;
-  return tokens ? `${account}\n${chalk.dim(`${tokens.toLocaleString('en-US')} tokens`)}` : account;
+  const requests = result?.command_code_usage?.total_count;
+  const usage = tokens != null ? `${tokens.toLocaleString('en-US')} tokens`
+    : requests != null ? `${requests.toLocaleString('en-US')} requests` : '';
+  return usage ? `${account}\n${chalk.dim(usage)}` : account;
 }
 
 export function formatCommandCodeQuotaCell(result, window, detail = '') {
@@ -699,6 +714,7 @@ function printSwitchResult(result) {
   console.log();
   console.log(chalk.green.bold('  ✓ SUCCESS'));
   console.log(chalk.cyan(`  ${BOX.v} `) + `${t('switched_to')}: ${chalk.bold.white(result.preset_name)}`);
+  console.log(`  ${t(result.codex_synced ? 'sync_both_success' : 'sync_codex_skipped')}`);
   
   if (result.backup_path) {
     console.log(chalk.cyan(`  ${BOX.v} `) + chalk.dim(`📦 Backup: ${result.backup_path.replace(homedir(), '~')}`));
@@ -837,11 +853,11 @@ async function savePresetInteractive(manager) {
   }
 
   try {
-    await manager.savePreset(name, description || '', watchedServices);
+    await withMutationGuard(() => manager.savePreset(name, description || '', watchedServices));
     console.log();
     printInfoBox('✓ Success', [`${t('saved_preset')}: ${name}`]);
   } catch (e) {
-    console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
+    printOperationError(e);
   }
 }
 
@@ -873,10 +889,10 @@ async function deletePresetInteractive(manager, presets) {
 
   if (confirmed) {
     try {
-      await manager.deletePreset(selection);
+      await withMutationGuard(() => manager.deletePreset(selection));
       printInfoBox('✓ Success', [`${t('deleted_preset')}: ${selection}`]);
     } catch (e) {
-      console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
+      printOperationError(e);
     }
   }
 }
@@ -940,7 +956,7 @@ export async function distributeCredentialsInteractive(manager, prompts = { chec
   if (!confirmed) return;
 
   try {
-    const result = await manager.distributeCurrentPresetCredentials({ authServiceKeys, includeOpenCodeGoSession, targetNames: selected });
+    const result = await withMutationGuard(() => manager.distributeCurrentPresetCredentials({ authServiceKeys, includeOpenCodeGoSession, targetNames: selected }));
     const changed = result.changed.length;
     const unchanged = result.unchanged.length;
     printInfoBox('✓ Success', [
@@ -949,37 +965,40 @@ export async function distributeCredentialsInteractive(manager, prompts = { chec
       `${t('credential_distribution_unchanged')}: ${unchanged}`,
     ]);
   } catch (error) {
-    console.log(chalk.red(`  ✗ ${t('error')}: ${error.message}`));
+    printOperationError(error);
   }
 }
 
 export const propagateOAuthInteractive = distributeCredentialsInteractive;
+
+function printOperationError(error) {
+  console.error(chalk.red(t(error.opmKey || 'sync_operation_error')));
+  process.exitCode = 1;
+}
 
 async function cmdSave(manager, name) {
   try {
     const authPath = manager.getAuthPath();
     if (!existsSync(authPath)) {
       console.log(chalk.red(`  ✗ ${t('auth_file_not_found')}: ${authPath}`));
+      process.exitCode = 1;
       return;
     }
 
-    await manager.savePreset(name);
+    await withMutationGuard(() => manager.savePreset(name));
     printInfoBox('✓ Success', [`${t('saved_preset')}: ${name}`]);
   } catch (e) {
-    console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
+    printOperationError(e);
   }
 }
 
-async function cmdSwitch(manager, name) {
+export async function cmdSwitch(manager, name) {
+  console.log(t('sync_restart'));
   try {
-    const result = await manager.switchPreset(name);
+    const result = await withMutationGuard(() => manager.switchPreset(name));
     printSwitchResult(result);
   } catch (e) {
-    if (e.message.includes('not found')) {
-      console.log(chalk.red(`  ✗ ${t('preset_not_found')}: ${name}`));
-    } else {
-      console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
-    }
+    printOperationError(e);
   }
 }
 
@@ -1061,17 +1080,22 @@ export function waitForQuotaKeypress(timeoutMs = null) {
 
 export function buildQuotaFrame(results, options = {}) {
   const { columns = 80, rows = 24, interactive = false, showGoogle = false,
-    page = 0, seconds = null, now = new Date(), rootDiskLine = null, warning = null } = options;
+    page = 0, seconds = null, now = new Date(), rootDiskLine = null, warning = null, presetMetadata = {} } = options;
   // Reserve the last column/row: writing the bottom-right cell can scroll a TTY.
   const width = Math.max(0, columns - 1);
   const body = [];
   const accountStarts = [];
   const items = getQuotaTableRowItems(normalizeQuotaResults(results), showGoogle);
   const account = result => {
-    const label = result.provider === 'commandcode' ? formatCommandCodeAccountCell(result) : formatAccountLabel(result);
-    const details = result.provider === 'commandcode' ? [getCommandCodeDailyDetail(result), getCommandCodeWeeklyDetail(result),
-      result.command_code_usage?.total_cost == null ? '' : `$${result.command_code_usage.total_cost.toFixed(2)} used`] : [];
-    return [label, ...(result.presets || []), ...details.filter(Boolean)].join('\n');
+    if (result.provider === 'commandcode') return formatCommandCodeAccountCell(result);
+    const sources = result.presets || [];
+    const label = formatAccountLabel(result) + (hasPresetLabel(result, 'Current Active') ? ' (Current Active)' : '');
+    const presets = sources.filter(source => !source.includes('Current Active')).map(source => {
+      const metadata = presetMetadata[extractPresetName(source)] || {};
+      const date = [metadata.last_used, metadata.created_at].map(value => Date.parse(value)).find(Number.isFinite);
+      return { source, date: date ?? -Infinity };
+    }).sort((a, b) => b.date - a.date).slice(0, 2);
+    return [label, ...presets.map(({ source }) => source)].map(line => fitQuotaLine(line, Infinity)).join('\n');
   };
   const windows = result => [
     [result.provider === 'claude' ? '5h' : 'D', result.daily],
@@ -1089,7 +1113,7 @@ export function buildQuotaFrame(results, options = {}) {
     for (const result of items) {
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
         : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
-      const details = windows(result).slice(2).map(([label, window]) =>
+      const details = (result.provider === 'commandcode' ? [] : windows(result).slice(2)).map(([label, window]) =>
         `${label}\n${formatPercent(window?.percent_remaining, { ...percentOptions, width: Math.min(10, accountWidth - 5) })}\n${formatReset(window?.reset_time_iso)}`);
       table.push([
         result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider,
@@ -1196,7 +1220,8 @@ export async function cmdQuota(manager) {
         if (`${getTerminalWidth()}x${process.stdout.rows || 24}` !== currentDimensions) continue;
         const frame = buildQuotaFrame(results, { columns, rows, interactive, showGoogle, page, warning,
           seconds: interactive ? getQuotaRefreshCountdownSeconds(deadline) : null,
-          rootDiskLine, output: process.stdout, refreshResults: manager.lastOpenAIRefreshResults });
+          rootDiskLine, output: process.stdout, refreshResults: manager.lastOpenAIRefreshResults,
+          presetMetadata: manager.config?.presets || {} });
         page = frame.page;
         if (interactive) process.stdout.write('\x1b[H\x1b[2J' + frame.lines.join('\r\n'));
         else { process.stdout.write(frame.lines.join('\n') + '\n'); break; }
@@ -1279,12 +1304,12 @@ async function runOpenAIKickoffInteractive(manager) {
       console.log();
     }
   } catch (error) {
-    console.log(chalk.red(`  ✗ ${t('error')}: ${error.message}`));
+    printOperationError(error);
     console.log();
   }
 }
 
-async function interactiveMode(manager) {
+export async function interactiveMode(manager, prompts = { select, input, confirm }) {
   const authPath = manager.getAuthPath();
   if (!existsSync(authPath)) {
     if (!(await setupAuthPath(manager))) return;
@@ -1318,7 +1343,7 @@ async function interactiveMode(manager) {
 
     if (!presets.length) {
       console.log(chalk.yellow(`  ⚠ ${t('no_presets_found')}`));
-      const saveNew = await confirm({ 
+      const saveNew = await prompts.confirm({
         message: chalk.cyan('  ' + t('save_current_as_preset')) 
       });
       if (saveNew) {
@@ -1328,7 +1353,7 @@ async function interactiveMode(manager) {
     }
 
     if (!mismatchPrompted && current && detectedPreset !== current) {
-      const overwrite = await confirm({
+      const overwrite = await prompts.confirm({
         message: chalk.yellow('  ⚠️  ' + t('overwrite_current_preset', { 
           preset: current, 
           active: detectedPreset || t('no_preset_active') 
@@ -1338,7 +1363,7 @@ async function interactiveMode(manager) {
       mismatchPrompted = true;
       if (overwrite) {
         try {
-          const result = await manager.overwritePresetFromCurrent(current);
+          const result = await withMutationGuard(() => manager.overwritePresetFromCurrent(current));
           const backupLine = result.backup_path
             ? `${t('backup')}: ${result.backup_path.replace(homedir(), '~')}`
             : `${t('backup')}: -`;
@@ -1346,11 +1371,11 @@ async function interactiveMode(manager) {
             t('preset_overwritten', { name: current }),
             backupLine,
           ]);
-          await input({ message: chalk.dim('Press Enter to continue...') });
+          await prompts.input({ message: chalk.dim('Press Enter to continue...') });
           continue;
         } catch (e) {
-          console.log(chalk.red(`  ✗ ${t('error')}: ${e.message}`));
-          await input({ message: chalk.dim('Press Enter to continue...') });
+          printOperationError(e);
+          await prompts.input({ message: chalk.dim('Press Enter to continue...') });
           continue;
         }
       }
@@ -1371,7 +1396,7 @@ async function interactiveMode(manager) {
 
     const choices = buildInteractiveChoices(presets);
 
-    const selection = await select({
+    const selection = await prompts.select({
       message: chalk.cyan.bold('  ➜ ' + t('select_preset')),
       choices,
       pageSize: 15,
@@ -1412,7 +1437,7 @@ async function interactiveMode(manager) {
         console.clear();
         printHeader();
         await cmdSwitch(manager, selection);
-        await input({ message: chalk.dim('Press Enter to continue...') });
+        await prompts.input({ message: chalk.dim('Press Enter to continue...') });
         return;
     }
   }
@@ -1434,16 +1459,18 @@ async function main() {
 
     switch (command) {
       case 'save':
-        if (args.length < 2) {
+        if (args.length !== 2) {
           console.log(chalk.red('  ✗ Usage: opm save <preset-name>'));
+          process.exitCode = 1;
         } else {
           await cmdSave(manager, args[1]);
         }
         break;
 
       case 'switch':
-        if (args.length < 2) {
+        if (args.length !== 2) {
           console.log(chalk.red('  ✗ Usage: opm switch <preset-name>'));
+          process.exitCode = 1;
         } else {
           await cmdSwitch(manager, args[1]);
         }
@@ -1455,7 +1482,8 @@ async function main() {
         break;
 
       default:
-        console.log(chalk.red(`  ✗ Unknown command: ${command}`));
+        console.log(chalk.red(t('sync_operation_error')));
+        process.exitCode = 1;
         console.log();
         console.log(chalk.bold('  Usage:'));
         console.log('    opm              ' + chalk.dim('# Interactive mode'));
@@ -1472,7 +1500,7 @@ const isDirectExecution = process.argv[1] && resolve(process.argv[1]) === fileUR
 
 if (isDirectExecution) {
   main().catch(e => {
-    console.error(chalk.red(`Fatal error: ${e.message}`));
+    printOperationError(e);
     process.exit(1);
   });
 }

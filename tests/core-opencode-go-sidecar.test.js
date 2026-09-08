@@ -35,7 +35,7 @@ test('legacy preset without sidecar preserves global Go session and detection is
   const { dir, manager } = await setup();
   try {
     const auth = join(dir, 'active.json');
-    const bytes = JSON.stringify({ openai: { type: 'oauth', refresh: 'r' } });
+    const bytes = JSON.stringify({ anthropic: { type: 'oauth', refresh: 'r' } });
     await writeFile(auth, bytes);
     await manager.setAuthPath(auth);
     await manager.savePreset('legacy');
@@ -187,7 +187,7 @@ test('switch rolls active auth, global session, config, and memory back on globa
     await writeFile(auth, 'active-bytes');
     await manager.setAuthPath(auth);
     await writeFile(manager.openCodeGoConfigFile, JSON.stringify({ workspaceId: 'old', authCookie: 'old' }));
-    await writeFile(join(manager.presetsDir, 'one.json'), JSON.stringify({ openai: { type: 'oauth', refresh: 'new' } }));
+    await writeFile(join(manager.presetsDir, 'one.json'), JSON.stringify({ anthropic: { type: 'oauth', refresh: 'new' } }));
     await writeFile(join(manager.sidecarsDir, 'one.json'), JSON.stringify(session));
     manager.config.current_preset = 'before';
     await manager._saveConfig();
@@ -253,7 +253,7 @@ test('new sidecar paths reject symlinks and init enforces regular global mode', 
     const sidecar = join(manager.sidecarsDir, 'one.json');
     await writeFile(real, JSON.stringify(session));
     await symlink(real, sidecar);
-    await assert.rejects(manager._readSidecar('one'), /Unsafe OpenCode Go sidecar path/);
+    await assert.rejects(manager._readSidecar('one'), error => error.opmKey === 'sync_path_error');
     await writeFile(manager.openCodeGoConfigFile, JSON.stringify(session));
     await chmod(manager.openCodeGoConfigFile, 0o644);
     await manager.init();
@@ -288,7 +288,7 @@ test('Unicode preset names with spaces preserve the original name and use a Go s
   try {
     const name = '개인 작업';
     const auth = join(dir, 'active.json');
-    await writeFile(auth, JSON.stringify({ openai: { type: 'oauth', refresh: 'r' } }));
+    await writeFile(auth, JSON.stringify({ anthropic: { type: 'oauth', refresh: 'r' } }));
     await manager.setAuthPath(auth);
     await writeFile(manager.openCodeGoConfigFile, JSON.stringify(session));
     await manager.savePreset(name);

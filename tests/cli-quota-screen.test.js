@@ -8,7 +8,7 @@ import test from 'node:test';
 import chalk from 'chalk';
 import stringWidth from 'string-width';
 import stripAnsi from 'strip-ansi';
-import { buildQuotaFrame, cmdQuota, fitQuotaLine, formatQuotaCountdownLine } from '../src/cli.js';
+import { buildQuotaFrame, cmdQuota, fitQuotaLine, formatQuotaCountdownLine, normalizeQuotaResults } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
 
 const quota = { percent_remaining: 75, reset_time_iso: '2099-09-07T12:00:00Z' };
@@ -48,10 +48,73 @@ test('narrow quota keeps bars, percentages, weekly/monthly/scoped windows and de
     assert.match(text, /[█░]+\s+75%/);
     assert.match(text, /[█░]+\s+50%/);
     assert.match(text, /Sonnet/);
-    assert.match(text, /13\.00 credits/);
-    assert.match(text, /12\.34 used/);
+    assert.doesNotMatch(text, /13\.00 credits|12\.34 used/);
     assert.match(text, /42 requests/);
   }
+});
+
+test('account display selects two newest metadata dates without mutating or merging source rows', () => {
+  const presetMetadata = {
+    old: { last_used: '2026-01-01', created_at: '2026-12-01' },
+    newest: { last_used: '2026-09-08', created_at: '2025-01-01' },
+    recent: { last_used: 'invalid', created_at: '2026-09-07' },
+    invalid: { last_used: 'invalid', created_at: 'Never' },
+  };
+  const items = ['old', 'invalid'].map(name => ({ provider: 'openai', account_id: 'real-account', nickname: name,
+    presets: [name, 'recent (~/presets/recent.json)', 'newest', 'missing'], daily: quota }));
+  const original = structuredClone(items);
+  for (const columns of [60, 120, 180]) {
+    const text = stripAnsi(buildQuotaFrame(items, { columns, presetMetadata }).lines.join('\n'));
+    assert.equal((text.match(/real-account/g) || []).length, 2);
+    assert.equal((text.match(/newest/g) || []).length, 2);
+    assert.equal((text.match(/recent/g) || []).length >= 2, true);
+    assert.ok(text.indexOf('newest') < text.indexOf('recent'));
+    assert.doesNotMatch(text, /old|invalid|missing/);
+  }
+  assert.deepEqual(items, original);
+  assert.equal(normalizeQuotaResults(items).length, 2);
+  assert.deepEqual(normalizeQuotaResults(items).map(item => item.presets.length), [4, 4]);
+});
+
+test('unknown dates retain source order and active identity survives the display limit', () => {
+  const item = { provider: 'openai', account_id: 'real-account',
+    presets: ['first (~/2099-01-01.json)', '(Current Active)', 'second', 'third'], daily: quota };
+  for (const columns of [60, 180]) {
+    const text = stripAnsi(buildQuotaFrame([item], { columns, presetMetadata: {
+      first: { last_used: 'invalid' }, second: { created_at: 'Never' },
+    } }).lines.join('\n'));
+    assert.match(text, /real-account \(Current Active\)/);
+    assert.ok(text.indexOf('first') < text.indexOf('second'));
+    assert.doesNotMatch(text, /third/);
+    const dated = stripAnsi(buildQuotaFrame([item], { columns, presetMetadata: {
+      second: { created_at: '2026-01-01' }, third: { last_used: '2026-02-01' },
+    } }).lines.join('\n'));
+    assert.ok(dated.indexOf('third') < dated.indexOf('second'));
+    assert.doesNotMatch(dated, /first|2099/);
+  }
+});
+
+test('Command Code account is at most two physical lines even with verbose sources and a long nickname', () => {
+  const item = { provider: 'commandcode', account_id: 'org-test', nickname: 'Long account name '.repeat(10) + '\nextra nickname line',
+    presets: ['source-one', 'source-two', 'source-three'], daily: quota, weekly: quota,
+    command_code_usage: { total_tokens: 123456, total_count: 42, total_cost: 12.34 },
+    command_code_credits: { total_remaining: 13 }, extra_windows: [{ ...quota, label: 'extra' }] };
+  const original = structuredClone(item);
+  for (const columns of [20, 39, 99, 100, 120, 180]) {
+    const lines = buildQuotaFrame([item], { columns }).lines.map(stripAnsi);
+    assert.ok(lines.every(line => stringWidth(line) <= columns - 1));
+    assert.doesNotMatch(lines.join('\n'), /source-|credits|requests|used|extra nickname/);
+    if (columns >= 100) {
+      const cells = lines.filter(line => line.startsWith('│')).slice(1).map(line => line.split('│').at(-2).trim()).filter(Boolean);
+      assert.equal(cells.length, 2);
+      assert.match(cells[1], /123,456 tokens/);
+    } else {
+      const start = lines.findIndex(line => line.includes('● Command Code'));
+      assert.match(lines[start + 2], /123,456 tokens/);
+      assert.match(lines[start + 3], /^D /);
+    }
+  }
+  assert.deepEqual(item, original);
 });
 
 test('paging exposes all body lines without scrolling and clamps after resize', () => {

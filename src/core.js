@@ -6,6 +6,9 @@ import { env } from 'process';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { t } from './i18n.js';
+import { assertIdentity, checkCodexFileStore, entryIdentity, getCodexAuthPath, getProxyCodexAuthPath, matchesNative, nativeFromEntry, openAIExpires,
+  parseAuth, parseNative, pathsOverlap, privateDir, readBytes, refreshedEntry, safePath,
+  selectOpenAI, syncError, proxyAuthFromEntry, writeBytesAtomic } from './codex.js';
 
 const ANTIGRAVITY_CLIENT_ID = env.OPM_ANTIGRAVITY_CLIENT_ID?.trim() || '';
 const ANTIGRAVITY_CLIENT_SECRET = env.OPM_ANTIGRAVITY_CLIENT_SECRET?.trim() || '';
@@ -26,12 +29,13 @@ function isPlainObject(value) {
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
-function validatePresetName(name) {
+export function validatePresetName(name) {
   const hasControlCharacter = typeof name === 'string' && Array.from(name).some(character => {
     const code = character.charCodeAt(0);
     return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
   });
-  if (typeof name !== 'string' || !name.trim() || name === '.' || name === '..' || name.includes('\0') || name.includes('/') || name.includes('\\') || hasControlCharacter) {
+  if (typeof name !== 'string' || !name.trim() || ['.', '..', '__proto__', 'constructor', 'prototype'].includes(name)
+    || name.includes('\0') || name.includes('/') || name.includes('\\') || /\p{Cf}/u.test(name) || hasControlCharacter) {
     throw new TypeError('Preset name contains unsafe characters');
   }
   return name;
@@ -140,10 +144,12 @@ async function findFirstExistingPath(paths) {
 
 export class PresetManager {
   constructor(configDir = null) {
-    this.configDir = configDir || join(homedir(), '.config', 'oauth-preset-manager');
+    this.configDir = resolve(configDir || join(homedir(), '.config', 'oauth-preset-manager'));
     this.presetsDir = join(this.configDir, 'presets');
     this.backupsDir = join(this.configDir, 'backups');
     this.sidecarsDir = join(this.configDir, 'preset-sidecars', 'opencode-go');
+    this.codexSidecarsDir = join(this.configDir, 'preset-sidecars', 'codex');
+    this.refreshRecoveryDir = join(this.configDir, 'refresh-recovery');
     this.configFile = join(this.configDir, 'config.json');
     this.quotaCacheFile = join(this.configDir, 'quota-cache.json');
     this.openCodeGoConfigFile = join(this.configDir, 'opencode-go.json');
@@ -155,13 +161,7 @@ export class PresetManager {
   }
 
   async init() {
-    await fs.mkdir(this.presetsDir, { recursive: true });
-    await fs.mkdir(this.backupsDir, { recursive: true });
-    await fs.mkdir(this.sidecarsDir, { recursive: true, mode: 0o700 });
-    await fs.chmod(join(this.configDir, 'preset-sidecars'), 0o700);
-    await fs.chmod(this.sidecarsDir, 0o700);
-    await fs.chmod(this.presetsDir, 0o700);
-    await fs.chmod(this.backupsDir, 0o700);
+    for (const path of [this.configDir, this.presetsDir, this.backupsDir, join(this.configDir, 'preset-sidecars'), this.sidecarsDir]) await privateDir(path);
     try {
       const globalStat = await fs.lstat(this.openCodeGoConfigFile);
       if (globalStat.isFile()) await fs.chmod(this.openCodeGoConfigFile, 0o600);
@@ -179,10 +179,8 @@ export class PresetManager {
   }
 
   async _loadConfig() {
-    try {
-      const data = await fs.readFile(this.configFile, 'utf-8');
-      return JSON.parse(data);
-    } catch {
+    const bytes = await readBytes(this.configFile);
+    if (bytes === null) {
       const defaultAuthPath = this.getSuggestedAuthPath();
       return {
         auth_path: defaultAuthPath,
@@ -190,6 +188,9 @@ export class PresetManager {
         presets: {},
       };
     }
+    const config = parseAuth(bytes);
+    if (!isPlainObject(config.presets) || (config.current_preset !== null && typeof config.current_preset !== 'string')) throw syncError('sync_config_error');
+    return config;
   }
 
   getSuggestedAuthPath() {
@@ -216,8 +217,7 @@ export class PresetManager {
   }
 
   async _saveConfig() {
-    await fs.writeFile(this.configFile, JSON.stringify(this.config, null, 2), { mode: 0o600 });
-    await fs.chmod(this.configFile, 0o600);
+    await this._writeJsonAtomic(this.configFile, this.config);
   }
 
   async _loadQuotaCache() {
@@ -250,38 +250,6 @@ export class PresetManager {
     await this._saveConfig();
   }
 
-  async _createBackup(name = null) {
-    const authPath = this.getAuthPath();
-    try {
-      await fs.access(authPath);
-    } catch {
-      return null;
-    }
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
-    const backupName = name || `backup_${timestamp}.json`;
-    const backupPath = join(this.backupsDir, backupName);
-
-    await fs.copyFile(authPath, backupPath);
-    await fs.chmod(backupPath, 0o600);
-
-    try {
-      const files = await fs.readdir(this.backupsDir);
-      const backups = files
-        .filter(f => f.startsWith('backup_') && f.endsWith('.json'))
-        .map(f => ({ name: f, path: join(this.backupsDir, f) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      
-      if (backups.length > 10) {
-        for (const old of backups.slice(0, backups.length - 10)) {
-          await fs.unlink(old.path);
-        }
-      }
-    } catch {}
-
-    return backupPath;
-  }
-
   async savePreset(name, description = '', watchedServices = null) {
     validatePresetName(name);
     const authPath = this.getAuthPath();
@@ -292,17 +260,24 @@ export class PresetManager {
       throw new Error(`Auth file not found: ${authPath}`);
     }
 
-    const authBytes = await fs.readFile(authPath);
-    const authData = JSON.parse(authBytes.toString('utf8'));
+    const authBytes = await readBytes(authPath);
+    const authData = parseAuth(authBytes);
     const presetPath = join(this.presetsDir, `${name}.json`);
     const session = await this._readStoredOpenCodeGoSession();
     const sidecarPath = this._sidecarPath(name);
     const previous = await this._captureFileState([presetPath, this.configFile]);
     previous[sidecarPath] = { bytes: await this._readSafeSidecarBytes(sidecarPath) };
+    const codexPath = this._codexSidecarPath(name);
+    previous[codexPath] = { bytes: await readBytes(codexPath) };
+    const codexBytes = await this._findNativeBundle(authData, previous[codexPath].bytes);
     const oldConfig = structuredClone(this.config);
     let sidecarBackupPath = null;
+    for (const [path, file] of Object.entries(previous)) {
+      if (file.bytes !== null) await this._writePrivateBackup(`before_save_${name}`, file.bytes);
+    }
     try {
       await this._writeBytesAtomic(presetPath, authBytes);
+      await this._writeCodexSidecar(name, codexBytes);
       // Missing or malformed global Go data is not an explicit session-clear action; preserve an existing sidecar.
       if (session) {
         if (previous[sidecarPath].bytes && !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) {
@@ -313,12 +288,13 @@ export class PresetManager {
       const services = Object.keys(authData);
       const now = new Date().toISOString();
       if (watchedServices === null) watchedServices = ['openai'];
-      this.config.presets[name] = { created_at: now, last_used: now, description, services, watched_services: watchedServices };
+      this.config.presets[name] = { created_at: now, last_used: now, description, services, watched_services: watchedServices,
+        codex_linked: Boolean(codexBytes || this.config.presets[name]?.codex_linked) };
       this.config.current_preset = name;
       await this._saveConfig();
     } catch (error) {
-      await this._restoreFileState(previous);
       this.config = oldConfig;
+      await this._restoreFileState(previous);
       throw error;
     }
     return true;
@@ -347,58 +323,68 @@ export class PresetManager {
   async switchPreset(name, autoBackup = true) {
     validatePresetName(name);
     const presetPath = join(this.presetsDir, `${name}.json`);
-    
-    try {
-      await fs.access(presetPath);
-    } catch {
-      throw new Error(`Preset not found: ${name}`);
-    }
-
+    const presetBytes = await readBytes(presetPath);
+    if (presetBytes === null) throw syncError('preset_not_found');
+    let newAuth = parseAuth(presetBytes);
+    const selection = selectOpenAI(newAuth);
     const authPath = this.getAuthPath();
-
-    // Read old and new auth data
-    let oldAuth = {};
-    try {
-      await fs.access(authPath);
-      oldAuth = JSON.parse(await fs.readFile(authPath, 'utf-8'));
-    } catch {}
-
-    const newAuth = JSON.parse(await fs.readFile(presetPath, 'utf-8'));
+    if ([this.presetsDir, this.backupsDir, join(this.configDir, 'preset-sidecars'), this.refreshRecoveryDir].some(path => pathsOverlap(path, authPath))
+      || [this.configFile, this.openCodeGoConfigFile, this.quotaCacheFile].includes(authPath)) throw syncError('sync_path_error');
     const sidecar = await this._readSidecar(name);
     if (sidecar.error) throw sidecar.error;
-    const diff = this._computeAuthDiff(oldAuth, newAuth);
-
-    let backupPath = null;
-    if (autoBackup) {
-      try {
-        await fs.access(authPath);
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
-        backupPath = await this._createBackup(`before_${name}_${timestamp}.json`);
-      } catch {}
+    const codexPath = getCodexAuthPath();
+    const proxyPath = selection ? getProxyCodexAuthPath() : null;
+    const linkPath = this._codexSidecarPath(name);
+    if (selection) await checkCodexFileStore(codexPath, this.configDir, authPath, proxyPath);
+    const paths = [authPath, presetPath, this.configFile];
+    if (sidecar.value) paths.push(this.openCodeGoConfigFile);
+    if (selection) paths.push(codexPath, proxyPath, linkPath);
+    const previous = await this._captureFileState(paths);
+    if (previous[this.configFile].bytes !== null) {
+      const diskConfig = parseAuth(previous[this.configFile].bytes);
+      if (!isPlainObject(diskConfig.presets)) throw syncError('sync_config_error');
     }
-
-    const oldAuthBytes = await fs.readFile(authPath).catch(() => null);
-    const oldGoBytes = await this._readSafeGlobalBytes();
-    const oldConfigBytes = await fs.readFile(this.configFile).catch(() => null);
+    let oldAuth = {};
+    if (previous[authPath].bytes) { try { oldAuth = parseAuth(previous[authPath].bytes); } catch {} }
     const oldConfig = structuredClone(this.config);
+    let backupPath = null;
+    for (const [path, file] of Object.entries(previous)) {
+      if ((selection || autoBackup) && file.bytes !== null) {
+        const backup = await this._writePrivateBackup(`before_switch_${name}`, file.bytes);
+        if (path === authPath) backupPath = backup;
+      }
+    }
+    let rotated = false;
+    let nativeBytes = null;
+    let proxyAuth = null;
+    if (selection) {
+      const hydrated = await this._hydrateOpenAI(newAuth, previous[linkPath].bytes, previous[codexPath].bytes);
+      newAuth = hydrated.auth;
+      nativeBytes = hydrated.bytes;
+      rotated = hydrated.rotated;
+      proxyAuth = proxyAuthFromEntry(selectOpenAI(newAuth).entry);
+    }
+    const diff = this._computeAuthDiff(oldAuth, newAuth);
     try {
-      await fs.mkdir(dirname(authPath), { recursive: true });
-      await fs.copyFile(presetPath, authPath);
-      await fs.chmod(authPath, 0o600);
+      const nextBytes = isDeepStrictEqual(parseAuth(presetBytes), newAuth) ? presetBytes : Buffer.from(JSON.stringify(newAuth, null, 2));
+      await this._writeBytesAtomic(authPath, nextBytes);
+      if (selection) {
+        await this._writeBytesAtomic(codexPath, nativeBytes);
+        await privateDir(dirname(dirname(proxyPath)));
+        await this._writeJsonAtomic(proxyPath, proxyAuth);
+        await this._writeBytesAtomic(presetPath, nextBytes);
+        await this._writeCodexSidecar(name, nativeBytes);
+      }
       if (sidecar.value) await this._writeJsonAtomic(this.openCodeGoConfigFile, sidecar.value);
-
       const now = new Date().toISOString();
-      if (this.config.presets[name]) this.config.presets[name].last_used = now;
+      this.config.presets[name] = { ...this.config.presets[name], last_used: now, codex_linked: Boolean(selection) };
       this.config.current_preset = name;
       await this._saveConfig();
     } catch (error) {
-      if (oldAuthBytes === null) await fs.unlink(authPath).catch(() => {});
-      else await this._writeBytesAtomic(authPath, oldAuthBytes);
-      if (oldGoBytes === null) await fs.unlink(this.openCodeGoConfigFile).catch(() => {});
-      else await this._writeBytesAtomic(this.openCodeGoConfigFile, oldGoBytes);
-      if (oldConfigBytes === null) await fs.unlink(this.configFile).catch(() => {});
-      else await this._writeBytesAtomic(this.configFile, oldConfigBytes);
       this.config = oldConfig;
+      try { await this._restoreFileState(previous); }
+      catch { throw syncError(rotated ? 'sync_rotated_rollback_error' : 'sync_rollback_error'); }
+      if (rotated) throw syncError('sync_rotated_error');
       throw error;
     }
 
@@ -408,6 +394,10 @@ export class PresetManager {
       source_path: presetPath,
       destination_path: authPath,
       backup_path: backupPath,
+      codex_synced: Boolean(selection),
+      codex_path: selection ? codexPath : null,
+      proxy_synced: Boolean(selection),
+      proxy_path: proxyPath,
       diff,
     };
   }
@@ -429,34 +419,39 @@ export class PresetManager {
       throw new Error(`Auth file not found: ${authPath}`);
     }
 
-    const authBytes = await fs.readFile(authPath);
+    const authBytes = await readBytes(authPath);
+    const authData = parseAuth(authBytes);
     const session = await this._readStoredOpenCodeGoSession();
     const sidecarPath = this._sidecarPath(name);
     const previous = await this._captureFileState([presetPath, this.configFile]);
     previous[sidecarPath] = { bytes: await this._readSafeSidecarBytes(sidecarPath) };
+    const codexPath = this._codexSidecarPath(name);
+    previous[codexPath] = { bytes: await readBytes(codexPath) };
+    const codexBytes = await this._findNativeBundle(authData, previous[codexPath].bytes);
     const oldConfig = structuredClone(this.config);
     let backupPath = null;
     let sidecarBackupPath = null;
     if (autoBackup) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
-      backupPath = join(this.backupsDir, `preset_${name}_${timestamp}.json`);
-      await fs.copyFile(presetPath, backupPath);
-      await fs.chmod(backupPath, 0o600);
+      backupPath = await this._writePrivateBackup(`preset_${name}_${timestamp}`, previous[presetPath].bytes);
     }
+    if (previous[codexPath].bytes !== null) await this._writePrivateBackup(`before_codex_${name}`, previous[codexPath].bytes);
 
     try {
       await this._writeBytesAtomic(presetPath, authBytes);
+      await this._writeCodexSidecar(name, codexBytes);
       if (session) {
         if (previous[sidecarPath].bytes && !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) sidecarBackupPath = await this._writePrivateBackup(`before_preset_${name}_opencode-go`, previous[sidecarPath].bytes);
         if (!previous[sidecarPath].bytes || !isDeepStrictEqual(await this._parseSessionBytes(previous[sidecarPath].bytes), session)) await this._writeJsonAtomic(sidecarPath, session);
       }
       const now = new Date().toISOString();
       if (this.config.presets[name]) this.config.presets[name].last_used = now;
+      if (codexBytes) this.config.presets[name] = { ...this.config.presets[name], codex_linked: true };
       this.config.current_preset = name;
       await this._saveConfig();
     } catch (error) {
-      await this._restoreFileState(previous);
       this.config = oldConfig;
+      await this._restoreFileState(previous);
       throw error;
     }
 
@@ -531,8 +526,10 @@ export class PresetManager {
       throw new Error(`Preset not found: ${name}`);
     }
 
+    for (const path of [presetPath, this._sidecarPath(name), this._codexSidecarPath(name)]) await safePath(path);
     await fs.unlink(presetPath);
     await fs.unlink(this._sidecarPath(name)).catch(() => {});
+    await this._writeCodexSidecar(name, null);
 
     if (this.config.presets[name]) {
       delete this.config.presets[name];
@@ -562,7 +559,7 @@ export class PresetManager {
 
     let currentAuth;
     try {
-      currentAuth = JSON.parse(await fs.readFile(authPath, 'utf-8'));
+      currentAuth = parseAuth(await readBytes(authPath));
     } catch {
       return null;
     }
@@ -571,9 +568,29 @@ export class PresetManager {
     
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
-        const presetAuth = JSON.parse(await fs.readFile(join(this.presetsDir, file), 'utf-8'));
         const name = file.slice(0, -5);
+        validatePresetName(name);
+        const presetAuth = parseAuth(await readBytes(join(this.presetsDir, file)));
         if (!isDeepStrictEqual(currentAuth, presetAuth)) continue;
+        const selection = selectOpenAI(presetAuth);
+        if (selection) {
+          const recovered = await this._recoverOpenAI(selection.entry);
+          if (!isDeepStrictEqual(selection.entry, recovered.entry)) continue;
+          const linked = await readBytes(this._codexSidecarPath(name));
+          if (linked || this.config.presets[name]?.codex_linked) {
+            const codexPath = getCodexAuthPath();
+            const proxyPath = getProxyCodexAuthPath();
+            await checkCodexFileStore(codexPath, this.configDir, authPath, proxyPath);
+            if (!linked || !matchesNative(selection.entry, parseNative(linked))) continue;
+            const native = parseNative(await readBytes(codexPath));
+            if (!matchesNative(selection.entry, native) || native.tokens.id_token !== parseNative(linked).tokens.id_token) continue;
+            const proxy = parseAuth(await readBytes(proxyPath));
+            if (proxy.accountId !== undefined && proxy.account_id !== undefined && proxy.accountId !== proxy.account_id) continue;
+            if (!isDeepStrictEqual(proxyAuthFromEntry(selection.entry), {
+              access: proxy.access, refresh: proxy.refresh, expires: proxy.expires, accountId: proxy.accountId ?? proxy.account_id,
+            })) continue;
+          }
+        }
         if (env.OPENCODE_GO_WORKSPACE_ID?.trim() || env.OPENCODE_GO_AUTH_COOKIE?.trim()) {
           return file.slice(0, -5);
         }
@@ -686,7 +703,19 @@ export class PresetManager {
       const targetAuth = presetMap.get(targetName);
       const nextAuth = structuredClone(targetAuth);
       for (const key of keys) nextAuth[key] = structuredClone(source[key]);
+      const codexPath = this._codexSidecarPath(targetName);
+      let codexChanged = false;
+      if (keys.some(key => key === 'openai' || key === 'codex')) {
+        const selection = selectOpenAI(nextAuth);
+        const bytes = await readBytes(codexPath);
+        fileState[codexPath] = { bytes };
+        if (bytes !== null) {
+          try { codexChanged = !selection || !matchesNative(selection.entry, parseNative(bytes)); }
+          catch { codexChanged = true; }
+        }
+      }
       plans.push({ targetName, targetPath, sidecarPath, targetAuth, nextAuth, sidecarBytes,
+        codexPath, codexChanged,
         authChanged: !isDeepStrictEqual(targetAuth, nextAuth),
         sidecarChanged: Boolean(session) && (!sidecarBytes || !isDeepStrictEqual(await this._parseSessionBytes(sidecarBytes), session)) });
     }
@@ -698,9 +727,10 @@ export class PresetManager {
 
     const backups = [];
     for (const plan of plans) {
-      if (!plan.authChanged && !plan.sidecarChanged) continue;
+      if (!plan.authChanged && !plan.sidecarChanged && !plan.codexChanged) continue;
       const backupPath = plan.authChanged ? await this._writePrivateBackup(`before_credential_distribution_${plan.targetName}`, fileState[plan.targetPath].bytes) : null;
       const sidecarBackupPath = plan.sidecarChanged && plan.sidecarBytes ? await this._writePrivateBackup(`before_credential_distribution_${plan.targetName}_opencode-go`, plan.sidecarBytes) : null;
+      if (plan.codexChanged) await this._writePrivateBackup(`before_codex_distribution_${plan.targetName}`, fileState[plan.codexPath].bytes);
       backups.push({ plan, backupPath, sidecarBackupPath });
     }
     const sourceChanged = includeOpenCodeGoSession && (!sourceSidecarBytes || !isDeepStrictEqual(await this._parseSessionBytes(sourceSidecarBytes), session));
@@ -714,11 +744,12 @@ export class PresetManager {
         result.source_sidecar_changed = true;
       }
       for (const { plan, backupPath, sidecarBackupPath } of backups) {
+        if (plan.codexChanged) await this._writeCodexSidecar(plan.targetName, null);
         if (plan.authChanged) await this._writeJsonAtomic(plan.targetPath, plan.nextAuth);
         if (plan.sidecarChanged) await this._writeJsonAtomic(plan.sidecarPath, session);
         result.changed.push({ preset_name: plan.targetName, services: keys.slice().sort(), session_changed: plan.sidecarChanged, backup_path: backupPath, sidecar_backup_path: sidecarBackupPath });
       }
-      result.unchanged = plans.filter(plan => !plan.authChanged && !plan.sidecarChanged).map(plan => ({ preset_name: plan.targetName }));
+      result.unchanged = plans.filter(plan => !plan.authChanged && !plan.sidecarChanged && !plan.codexChanged).map(plan => ({ preset_name: plan.targetName }));
     } catch (error) {
       await this._restoreFileState(fileState);
       throw error;
@@ -744,6 +775,138 @@ export class PresetManager {
   }
 
   _sidecarPath(name) { return join(this.sidecarsDir, `${name}.json`); }
+
+  _codexSidecarPath(name) { validatePresetName(name); return join(this.codexSidecarsDir, `${name}.json`); }
+
+  async _writeCodexSidecar(name, bytes) {
+    const path = this._codexSidecarPath(name);
+    if (bytes !== null) await this._writeBytesAtomic(path, bytes);
+    else {
+      await safePath(path);
+      await fs.unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    }
+  }
+
+  async _findNativeBundle(auth, stored = null, current = undefined) {
+    const selection = selectOpenAI(auth);
+    if (!selection || !selection.entry.access || !selection.entry.refresh) return null;
+    const { entry } = selection;
+    const match = bytes => {
+      if (bytes === null) return null;
+      try { return matchesNative(entry, parseNative(bytes)) ? bytes : null; } catch { return null; }
+    };
+    if (match(stored)) return stored;
+    if (current === undefined) {
+      const path = getCodexAuthPath();
+      if (pathsOverlap(dirname(path), this.configDir)) throw syncError('sync_path_error');
+      current = await readBytes(path);
+    }
+    if (match(current)) return current;
+    if (entry.id_token || entry.idToken) {
+      try { return Buffer.from(JSON.stringify(nativeFromEntry(entry, entry.id_token || entry.idToken, entry.last_refresh), null, 2)); } catch {}
+    }
+    return null;
+  }
+
+  _withOpenAIEntry(auth, entry) {
+    const next = structuredClone(auth);
+    for (const key of selectOpenAI(auth).keys) {
+      for (const field of ['access', 'refresh', 'expires', 'accountId', 'id_token', 'idToken', 'last_refresh', 'opm_identity']) {
+        if (Object.hasOwn(entry, field)) next[key][field] = entry[field];
+        else delete next[key][field];
+      }
+    }
+    return next;
+  }
+
+  _recoveryPath(refresh) {
+    return join(this.refreshRecoveryDir, `${createHash('sha256').update(refresh).digest('hex')}.json`);
+  }
+
+  async _recoverOpenAI(original, allowUncertain = false) {
+    let entry = { ...original };
+    let rotated = false;
+    const visited = new Set();
+    while (typeof entry.refresh === 'string' && entry.refresh) {
+      if (visited.has(entry.refresh)) throw syncError('sync_recovery_error');
+      visited.add(entry.refresh);
+      const bytes = await readBytes(this._recoveryPath(entry.refresh));
+      if (bytes === null) break;
+      const log = parseAuth(bytes);
+      if (log.status !== 'received' || log.source_refresh !== entry.refresh || !isPlainObject(log.source_identity)
+        || !Array.isArray(log.source_accesses) || log.source_accesses.some(value => typeof value !== 'string')) throw syncError('sync_recovery_error');
+      let next;
+      try {
+        const context = assertIdentity(entryIdentity(entry), log.source_identity);
+        next = refreshedEntry({ ...entry, opm_identity: context }, log.response, log.received_at);
+      }
+      catch { throw syncError('sync_recovery_error'); }
+      if (next.refresh === entry.refresh && !log.source_accesses.includes(entry.access)
+        && entry.access !== next.access) {
+        // Opaque access tokens cannot establish whether an unknown login is newer or older.
+        if (!allowUncertain) throw syncError('sync_recovery_error');
+        return { entry: { ...entry, opm_identity: assertIdentity(entryIdentity(entry), entryIdentity(next)) }, rotated, needsRefresh: true };
+      }
+      rotated = true;
+      const sameRefresh = next.refresh === entry.refresh;
+      entry = next;
+      if (sameRefresh) break;
+    }
+    return { entry, rotated };
+  }
+
+  async _requestOpenAIRefresh(entry) {
+    if (typeof entry.refresh !== 'string' || !entry.refresh.trim()) throw syncError('sync_refresh_error');
+    const path = this._recoveryPath(entry.refresh);
+    const previous = await readBytes(path);
+    if (previous !== null) await this._writePrivateBackup('before_refresh_recovery', previous);
+    const sourceAccesses = [...new Set([...(previous ? parseAuth(previous).source_accesses || [] : []), entry.access].filter(value => typeof value === 'string'))];
+    const sourceIdentity = entryIdentity(entry);
+    // The pending record prevents a later switch from silently reusing possibly spent tokens.
+    await this._writeJsonAtomic(path, { status: 'pending', source_refresh: entry.refresh, source_accesses: sourceAccesses, source_identity: sourceIdentity });
+    let response;
+    try { response = await refreshOpenAIToken(entry.refresh, this._requestJson); }
+    catch { throw syncError('sync_refresh_uncertain'); }
+    const receivedAt = new Date().toISOString();
+    const log = { status: 'received', source_refresh: entry.refresh, source_accesses: sourceAccesses, source_identity: sourceIdentity, received_at: receivedAt, response: {} };
+    for (const key of ['id_token', 'access_token', 'refresh_token', 'expires_in']) {
+      if (response && Object.hasOwn(response, key)) log.response[key] = response[key];
+    }
+    try { await this._writeJsonAtomic(path, log); }
+    catch {
+      // A second independent private copy may still succeed after a rename/metadata failure.
+      try { await this._writePrivateBackup('rotated_openai_recovery', Buffer.from(JSON.stringify(log))); } catch {}
+      throw syncError('sync_recovery_write_error');
+    }
+    // Never roll this record back: OAuth rotation is outside the filesystem transaction.
+    try { return refreshedEntry(entry, log.response, receivedAt); }
+    catch { throw syncError('sync_recovery_error'); }
+  }
+
+  async _hydrateOpenAI(auth, stored, current) {
+    const original = selectOpenAI(auth).entry;
+    const originalBytes = await this._findNativeBundle(auth, stored, current);
+    const recovered = await this._recoverOpenAI(originalBytes ? { ...original, id_token: parseNative(originalBytes).tokens.id_token } : original, true);
+    let entry = recovered.rotated || recovered.needsRefresh ? recovered.entry : { ...original };
+    let rotated = recovered.rotated;
+    let bytes = !rotated ? originalBytes : !entry.id_token ? null : await this._findNativeBundle(this._withOpenAIEntry(auth, entry), stored, current);
+    let expires = openAIExpires(entry);
+    if (recovered.needsRefresh || !bytes || expires === null || expires <= Date.now()) {
+      const priorNative = bytes ? parseNative(bytes) : null;
+      entry = await this._requestOpenAIRefresh(priorNative ? { ...entry, id_token: priorNative.tokens.id_token } : entry);
+      rotated = true;
+      try {
+        const next = nativeFromEntry(entry, entry.id_token, entry.last_refresh);
+        bytes = Buffer.from(JSON.stringify({ ...priorNative, ...next, tokens: { ...priorNative?.tokens, ...next.tokens } }, null, 2));
+      }
+      catch { throw syncError('sync_recovery_error'); }
+      expires = openAIExpires(entry);
+      if (expires === null || expires <= Date.now()) throw syncError('sync_recovery_error');
+    }
+    entry.expires = expires;
+    entry.accountId = parseNative(bytes).tokens.account_id;
+    return { auth: this._withOpenAIEntry(auth, entry), bytes, rotated };
+  }
 
   async _readStoredOpenCodeGoSession() {
     try {
@@ -777,15 +940,7 @@ export class PresetManager {
   }
 
   async _readSafeSidecarBytes(path) {
-    try {
-      const fileStat = await fs.lstat(path);
-      if (fileStat.isSymbolicLink()) throw new Error(`Unsafe OpenCode Go sidecar path: ${path}`);
-      if (!fileStat.isFile()) throw new Error(`Invalid OpenCode Go sidecar path: ${path}`);
-      return await fs.readFile(path);
-    } catch (error) {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    }
+    return readBytes(path);
   }
 
   async _readSafeGlobalBytes() {
@@ -801,40 +956,34 @@ export class PresetManager {
   }
 
   async _writeBytesAtomic(path, bytes) {
-    const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    try { await fs.mkdir(dirname(path), { recursive: true }); await fs.writeFile(tmpPath, bytes, { mode: 0o600 }); await fs.rename(tmpPath, path); await fs.chmod(path, 0o600); }
-    catch (error) { await fs.unlink(tmpPath).catch(() => {}); throw error; }
+    await writeBytesAtomic(path, bytes);
   }
 
   async _writeJsonAtomic(path, data) {
-    const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
-      await fs.rename(tmpPath, path);
-      await fs.chmod(path, 0o600);
-    } catch (error) {
-      await fs.unlink(tmpPath).catch(() => {});
-      throw error;
-    }
+    await this._writeBytesAtomic(path, Buffer.from(JSON.stringify(data, null, 2)));
   }
 
   async _captureFileState(paths) {
     const state = {};
-    for (const path of paths) state[path] = { bytes: await fs.readFile(path).catch(() => null) };
+    for (const path of paths) state[path] = { bytes: await readBytes(path) };
     return state;
   }
 
   async _restoreFileState(state) {
+    let failed = false;
     for (const [path, file] of Object.entries(state)) {
-      if (file.bytes === null) await fs.unlink(path).catch(() => {});
-      else await this._writeBytesAtomic(path, file.bytes);
+      try {
+        await safePath(path);
+        if (file.bytes === null) await fs.unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        else await this._writeBytesAtomic(path, file.bytes);
+      } catch { failed = true; }
     }
+    if (failed) throw syncError('sync_rollback_error');
   }
 
   async _writePrivateBackup(prefix, bytes) {
     const path = join(this.backupsDir, `${prefix}_${Date.now()}_${randomUUID()}.json`);
-    await fs.writeFile(path, bytes, { mode: 0o600 });
-    await fs.chmod(path, 0o600);
+    await this._writeBytesAtomic(path, bytes);
     return path;
   }
 
@@ -851,25 +1000,6 @@ export class PresetManager {
         })),
     ];
 
-    const records = (await Promise.all(targets.map(async target => {
-      try {
-        const data = JSON.parse(await fs.readFile(target.path, 'utf-8'));
-        const service = data.codex ? 'codex' : data.openai ? 'openai' : null;
-        const entry = service ? data[service] : null;
-        if (
-          !entry
-          || entry.type !== 'oauth'
-          || typeof entry.expires !== 'number'
-          || entry.expires > Date.now()
-        ) {
-          return null;
-        }
-        return { ...target, data, service, entry };
-      } catch {
-        return null;
-      }
-    }))).filter(Boolean);
-
     const makeResult = (record, success, error = null) => ({
       preset_name: record.preset_name,
       is_active: record.is_active,
@@ -878,53 +1008,68 @@ export class PresetManager {
     });
     const results = [];
     const groups = new Map();
-
-    for (const record of records) {
-      if (typeof record.entry.refresh !== 'string' || !record.entry.refresh) {
-        results.push(makeResult(record, false, 'No refresh token is available'));
-        continue;
-      }
-
-      const group = groups.get(record.entry.refresh) || [];
-      group.push(record);
-      groups.set(record.entry.refresh, group);
-    }
-
-    const groupResults = await Promise.all(Array.from(groups.entries()).map(async ([refresh, group]) => {
-      let tokens;
+    for (const target of targets) {
       try {
-        tokens = await refreshOpenAIToken(refresh, this._requestJson);
+        const bytes = await readBytes(target.path);
+        if (bytes === null) continue;
+        const data = parseAuth(bytes);
+        const selection = selectOpenAI(data);
+        if (!selection) continue;
+        let original = selection.entry;
+        if (!target.is_active) {
+          const linked = await readBytes(this._codexSidecarPath(target.preset_name));
+          if (linked) {
+            try {
+              const native = parseNative(linked);
+              if (matchesNative(original, native)) original = { ...original, id_token: native.tokens.id_token };
+            } catch {}
+          }
+        }
+        const recovered = await this._recoverOpenAI(original);
+        const entry = recovered.entry;
+        if (!recovered.rotated && (typeof entry.expires !== 'number' || entry.expires > Date.now())) continue;
+        if (typeof entry.refresh !== 'string' || !entry.refresh) {
+          results.push(makeResult(target, false, 'No refresh token is available'));
+          continue;
+        }
+        const group = groups.get(entry.refresh) || [];
+        group.push({ ...target, data, entry });
+        groups.set(entry.refresh, group);
+      } catch (error) { results.push(makeResult(target, false, error.opmKey ? t(error.opmKey) : t('sync_operation_error'))); }
+    }
+    const groupResults = await Promise.all(Array.from(groups.values()).map(async group => {
+      let entry;
+      try {
+        const context = assertIdentity(...group.map(record => entryIdentity(record.entry)));
+        for (const record of group) {
+          const paths = [record.path];
+          if (!record.is_active) paths.push(this._codexSidecarPath(record.preset_name));
+          record.previous = await this._captureFileState(paths);
+          for (const file of Object.values(record.previous)) {
+            if (file.bytes !== null) await this._writePrivateBackup('before_quota_refresh', file.bytes);
+          }
+        }
+        entry = (group.find(record => record.entry.id_token) || group[0]).entry;
+        entry = { ...entry, opm_identity: context };
+        if (typeof entry.expires !== 'number' || entry.expires <= Date.now()) entry = await this._requestOpenAIRefresh(entry);
       } catch (error) {
-        return group.map(record => makeResult(record, false, error.message));
+        return group.map(record => makeResult(record, false, error.opmKey ? t(error.opmKey) : t('sync_operation_error')));
       }
-
-      const access = tokens?.access_token;
-      const expiresIn = Number(tokens?.expires_in);
-      const jwtExpires = Number(parseJWTPayload(access || '')?.exp);
-      const expires = Number.isFinite(expiresIn) && expiresIn > 0
-        ? Date.now() + expiresIn * 1000
-        : Number.isFinite(jwtExpires) && jwtExpires > 0
-          ? jwtExpires * 1000
-          : null;
-
-      if (!access || !expires) {
-        return group.map(record => makeResult(record, false, 'OAuth response did not include a usable access token'));
-      }
-
-      const accountId = extractAccountIdFromTokenSet(tokens);
       return Promise.all(group.map(async record => {
         try {
-          record.data[record.service] = {
-            ...record.entry,
-            access,
-            refresh: tokens.refresh_token || refresh,
-            expires,
-            ...(accountId ? { accountId } : {}),
-          };
-          await this._writeJsonAtomic(record.path, record.data);
+          const nextEntry = { ...entry, accountId: entry.accountId || record.entry.accountId };
+          const updated = this._withOpenAIEntry(record.data, nextEntry);
+          if (!record.is_active) {
+            let native = null;
+            if (entry.id_token) native = Buffer.from(JSON.stringify(nativeFromEntry(entry, entry.id_token, entry.last_refresh), null, 2));
+            await this._writeCodexSidecar(record.preset_name, native);
+          }
+          await this._writeJsonAtomic(record.path, updated);
           return makeResult(record, true);
-        } catch (error) {
-          return makeResult(record, false, `Failed to save refreshed token: ${error.message}`);
+        } catch {
+          try { await this._restoreFileState(record.previous); }
+          catch { return makeResult(record, false, t('sync_rotated_rollback_error')); }
+          return makeResult(record, false, t('sync_rotated_error'));
         }
       }));
     }));
@@ -1378,16 +1523,15 @@ export class PresetManager {
     await this._saveQuotaCache();
   }
 
-  _extractOpenAIOAuth(authData) {
-    const entry = authData.codex || authData.openai;
+  _extractOpenAIOAuth(authData, strict = false) {
+    let entry;
+    try { entry = selectOpenAI(authData)?.entry; } catch (error) { if (strict) throw error; return null; }
     if (!entry || typeof entry !== 'object') return null;
     if (entry.type !== 'oauth') return null;
     if (!entry.access) return null;
     
     return {
-      access: entry.access,
-      refresh: entry.refresh,
-      expires: entry.expires,
+      ...entry,
       account_id: entry.accountId,
     };
   }
@@ -1408,15 +1552,32 @@ export class PresetManager {
   async collectOpenAIKickoffTargets() {
     const tokenMap = new Map();
 
-    const addTarget = (entry, label, nickname = null) => {
+    const addTarget = async (entry, label, nickname = null) => {
       if (!entry?.access) return;
-
-      const key = entry.refresh || entry.access;
+      if (nickname !== null) {
+        const linked = await readBytes(this._codexSidecarPath(nickname));
+        if (linked) {
+          const native = parseNative(linked);
+          if (native.tokens.access_token === entry.access && native.tokens.refresh_token === entry.refresh) {
+            const context = assertIdentity(entryIdentity(entry), entryIdentity({ access: entry.access,
+              id_token: native.tokens.id_token, accountId: native.tokens.account_id }));
+            entry = { ...entry, id_token: entry.id_token || entry.idToken || native.tokens.id_token, opm_identity: context };
+          }
+        }
+      }
+      // Resolve every source before batching: distinct old refresh tokens can converge.
+      ({ entry } = await this._recoverOpenAI(entry));
+      const key = entry.refresh ? `refresh:${entry.refresh}` : `access:${entry.access}`;
       const identity = this._extractOpenAIIdentity(entry.access, entry.account_id);
-      const resolvedAccountId = identity.account_id || entry.account_id || null;
+      const context = entryIdentity(entry);
+      const resolvedAccountId = context.account || identity.account_id || null;
       const existing = tokenMap.get(key);
 
       if (existing) {
+        existing.opm_identity = assertIdentity(entryIdentity(existing), context);
+        existing.account_id = existing.opm_identity.account || existing.account_id;
+        existing.accountId = existing.account_id;
+        existing.user_id = existing.opm_identity.user || existing.user_id;
         existing.labels.add(label);
         if (!existing.nickname && nickname) {
           existing.nickname = nickname;
@@ -1425,11 +1586,11 @@ export class PresetManager {
       }
 
       tokenMap.set(key, {
-        access: entry.access,
-        refresh: entry.refresh,
-        expires: entry.expires,
+        ...entry,
+        opm_identity: context,
+        accountId: resolvedAccountId,
         account_id: resolvedAccountId,
-        user_id: identity.user_id,
+        user_id: context.user || identity.user_id,
         email: identity.email,
         plan_type: identity.plan_type,
         labels: new Set([label]),
@@ -1438,23 +1599,18 @@ export class PresetManager {
     };
 
     const authPath = this.getAuthPath();
-    try {
-      await fs.access(authPath);
-      const authData = JSON.parse(await fs.readFile(authPath, 'utf-8'));
-      const entry = this._extractOpenAIOAuth(authData);
-      let displayPath = authPath;
-      try {
-        displayPath = authPath.replace(homedir(), '~');
-      } catch {}
-      addTarget(entry, `(Current Active: ${displayPath})`, null);
-    } catch {}
+    const activeBytes = await readBytes(authPath);
+    if (activeBytes !== null) {
+      const entry = this._extractOpenAIOAuth(parseAuth(activeBytes), true);
+      await addTarget(entry, `(Current Active: ${authPath.replace(homedir(), '~')})`, null);
+    }
 
     const presetData = await this.listPresetAuthData();
     for (const [presetName, authData] of presetData) {
-      const entry = this._extractOpenAIOAuth(authData);
+      const entry = this._extractOpenAIOAuth(authData, true);
       if (!entry) continue;
       const display = join(this.presetsDir, `${presetName}.json`).replace(homedir(), '~');
-      addTarget(entry, `${presetName} (${display})`, presetName);
+      await addTarget(entry, `${presetName} (${display})`, presetName);
     }
 
     return Array.from(tokenMap.values()).map(target => ({
@@ -1548,17 +1704,18 @@ export class PresetManager {
         presets: target.presets,
         model: OPENAI_KICKOFF_MODEL,
         output_text: null,
-        error: error.message,
+        error: t(error.opmKey || 'sync_operation_error'),
       };
     }
   }
 
   async _ensureOpenAIAccessToken(target) {
-    const hasFreshAccess = typeof target.expires === 'number' && target.expires > Date.now();
-    if (target.access && hasFreshAccess) {
+    let { entry } = await this._recoverOpenAI({ ...target, accountId: target.accountId || target.account_id });
+    const hasFreshAccess = typeof entry.expires === 'number' && entry.expires > Date.now();
+    if (entry.access && hasFreshAccess) {
       return {
-        access: target.access,
-        account_id: target.account_id,
+        access: entry.access,
+        account_id: entry.accountId,
       };
     }
 
@@ -1566,14 +1723,11 @@ export class PresetManager {
       throw new Error('OpenAI token expired and no refresh token is available');
     }
 
-    const tokens = await refreshOpenAIToken(target.refresh, this._requestJson);
-    if (!tokens?.access_token) {
-      throw new Error('OpenAI token refresh failed');
-    }
+    entry = await this._requestOpenAIRefresh(entry);
 
     return {
-      access: tokens.access_token,
-      account_id: extractAccountIdFromTokenSet(tokens) || target.account_id,
+      access: entry.access,
+      account_id: entry.accountId,
     };
   }
 
@@ -1822,28 +1976,6 @@ function parseJWTPayload(token) {
     const payload = JSON.parse(decodeBase64url(parts[1]).toString('utf-8'));
     if (typeof payload === 'object') return payload;
   } catch {}
-  return null;
-}
-
-function extractAccountIdFromTokenSet(tokens) {
-  const idTokenClaims = typeof tokens?.id_token === 'string' ? parseJWTPayload(tokens.id_token) : null;
-  const accessTokenClaims = typeof tokens?.access_token === 'string' ? parseJWTPayload(tokens.access_token) : null;
-  const claims = idTokenClaims || accessTokenClaims;
-  const authSection = claims?.['https://api.openai.com/auth'];
-
-  if (typeof claims?.chatgpt_account_id === 'string' && claims.chatgpt_account_id) {
-    return claims.chatgpt_account_id;
-  }
-
-  if (typeof authSection?.chatgpt_account_id === 'string' && authSection.chatgpt_account_id) {
-    return authSection.chatgpt_account_id;
-  }
-
-  const organizations = claims?.organizations;
-  if (Array.isArray(organizations) && typeof organizations[0]?.id === 'string') {
-    return organizations[0].id;
-  }
-
   return null;
 }
 
