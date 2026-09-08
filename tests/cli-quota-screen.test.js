@@ -206,6 +206,70 @@ test('Command Code account is at most two physical lines even with verbose sourc
   assert.deepEqual(item, original);
 });
 
+test('Command Code errors fit two physical lines without mutating errors or limiting other providers', () => {
+  const certificate = 'Command Code API error: self-signed certificate in certificate chain';
+  const errors = [certificate, 'x'.repeat(300), '인증서오류👩‍💻'.repeat(30),
+    'Command Code API error:\nself-signed\r\ncertificate\t in\ncertificate chain',
+    '\x1b[31mCommand Code API error:\x1b[0m \x1b[2Jself-signed\x1b]0;owned\x07 certificate in certificate chain',
+    'short error', 'Command Code API error:', 'Other Command Code API error: detail'];
+  const oldLevel = chalk.level;
+  const oldNoColor = process.env.NO_COLOR;
+  try {
+    for (const color of [0, 3]) {
+      chalk.level = color;
+      if (color) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = '1';
+      for (const error of errors) {
+        const item = { provider: 'commandcode', account_id: 'org-test', nickname: 'Long nickname '.repeat(20),
+          presets: ['source-one', 'source-two', 'source-three'], daily: quota, weekly: quota,
+          command_code_usage: { total_tokens: 123456 }, error };
+        const original = structuredClone(item);
+        for (const columns of [39, 79, 100, 120, 180]) {
+          const lines = buildQuotaFrame([item], { columns }).lines;
+          assert.ok(lines.every(line => stringWidth(line) <= columns - 1 && !/[\r\n\t]/.test(line)));
+          assert.ok(lines.every(line => Array.from(stripAnsi(line)).every(char => {
+            const code = char.codePointAt(0);
+            return code >= 32 && (code < 127 || code > 159);
+          })));
+          assert.ok(!lines.join('\n').includes('\x1b[2J') && !lines.join('\n').includes('owned'));
+          const plain = lines.map(stripAnsi);
+          const dataRows = columns >= 100 ? plain.filter(line => line.startsWith('│')).slice(1) : null;
+          if (dataRows) assert.equal(dataRows.length, 2, `${columns}: ${plain.join('\n')}`);
+          const block = dataRows ? dataRows.map(line => line.split('│')[2].trim()).filter(Boolean)
+            : plain.slice(plain.findIndex(line => line.startsWith('● Command Code')) + 3);
+          assert.ok(block.length >= 1 && block.length <= 2);
+          const width = dataRows ? 16 : columns - 1;
+          assert.ok(block.every(line => stringWidth(line) <= width));
+          if (error === certificate) {
+            assert.match(block[0], /^self-signed/);
+            if (dataRows) assert.ok(block[1].endsWith('…'));
+            else assert.equal(block.join('').replace(/\s/g, ''), certificate.replace('Command Code API error: ', '').replace(/\s/g, ''));
+          }
+          if (error === 'short error') assert.deepEqual(block, [error]);
+          if (error.startsWith('Other ')) assert.match(block[0], /^Other Command/);
+          if (error === 'x'.repeat(300) || error.startsWith('인증서')) {
+            assert.equal(block.length, 2);
+            assert.ok(block[1].endsWith('…'));
+            assert.ok(!block[0].endsWith('…'));
+          }
+          const other = { provider: 'openai', account_id: 'other', error: certificate };
+          const otherLines = buildQuotaFrame([other], { columns }).lines.map(stripAnsi);
+          if (dataRows) {
+            const cells = otherLines.filter(line => line.startsWith('│')).slice(1).map(line => line.split('│')[2].trim());
+            assert.ok(cells.length > 2);
+            assert.equal(cells.join(' '), certificate);
+          } else assert.equal(otherLines.at(-1), fitQuotaLine(certificate, columns - 1));
+        }
+        assert.deepEqual(item, original);
+      }
+    }
+  } finally {
+    chalk.level = oldLevel;
+    if (oldNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = oldNoColor;
+  }
+});
+
 test('paging exposes all body lines without scrolling and clamps after resize', () => {
   const options = { columns: 39, rows: 10, interactive: true, showGoogle: true };
   const first = buildQuotaFrame(results, options);
