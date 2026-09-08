@@ -1620,7 +1620,15 @@ export class PresetManager {
   }
 
   async runOpenAIKickoffBatch(timeoutSeconds = 30) {
-    const targets = await this.collectOpenAIKickoffTargets();
+    let targets;
+    try { targets = await this.collectOpenAIKickoffTargets(); }
+    catch (error) {
+      const failure = openAIKickoffFailure(error, 'preflight');
+      throw Object.assign(new Error(failure.error), failure, {
+        inference_attempted: false, inference_completed: false,
+        opmKey: failure.opmKey || 'openai_kickoff_preflight_failed',
+      });
+    }
     if (targets.length === 0) {
       return {
         model: OPENAI_KICKOFF_MODEL,
@@ -1641,6 +1649,13 @@ export class PresetManager {
   }
 
   async _runOpenAIKickoffForTarget(target, timeoutSeconds = 30) {
+    const result = {
+      provider: 'openai', account_id: target.account_id, user_id: target.user_id,
+      email: target.email, plan_type: target.plan_type, nickname: target.nickname,
+      presets: target.presets, model: OPENAI_KICKOFF_MODEL, output_text: null, error: null,
+      stage: 'auth', inference_attempted: false, inference_completed: false,
+      http_status: null, error_code: null,
+    };
     try {
       const auth = await this._ensureOpenAIAccessToken(target);
       const resolvedAccountId = auth.account_id || this._openaiAccountIdFromJWT(auth.access);
@@ -1655,6 +1670,9 @@ export class PresetManager {
         headers['ChatGPT-Account-Id'] = resolvedAccountId;
       }
 
+      result.account_id = resolvedAccountId;
+      result.stage = 'inference';
+      result.inference_attempted = true;
       const response = await this._requestJson(
         OPENAI_CODEX_RESPONSES_URL,
         {
@@ -1681,32 +1699,20 @@ export class PresetManager {
         timeoutSeconds * 1000,
       );
 
-      return {
-        provider: 'openai',
-        account_id: resolvedAccountId,
-        user_id: target.user_id,
-        email: target.email,
-        plan_type: target.plan_type,
-        nickname: target.nickname,
-        presets: target.presets,
-        model: OPENAI_KICKOFF_MODEL,
-        output_text: extractOpenAIResponseText(response),
-        error: null,
-      };
+      let output = extractOpenAIResponseText(response);
+      for (const secret of [auth.access, target.access, target.refresh, target.id_token, target.idToken]) {
+        if (typeof secret === 'string' && secret) output = output.split(secret).join('[redacted]');
+      }
+      result.output_text = /\b(?:authorization|cookie|set-cookie)\s*:|\bBearer\s+\S+/i.test(output)
+        ? '[redacted]' : Array.from(output, character => {
+          const code = character.codePointAt(0);
+          return code < 32 || (code >= 127 && code <= 159) ? ' ' : character;
+        }).join('');
+      result.inference_completed = true;
     } catch (error) {
-      return {
-        provider: 'openai',
-        account_id: target.account_id,
-        user_id: target.user_id,
-        email: target.email,
-        plan_type: target.plan_type,
-        nickname: target.nickname,
-        presets: target.presets,
-        model: OPENAI_KICKOFF_MODEL,
-        output_text: null,
-        error: t(error.opmKey || 'sync_operation_error'),
-      };
+      Object.assign(result, openAIKickoffFailure(error, result.stage));
     }
+    return result;
   }
 
   async _ensureOpenAIAccessToken(target) {
@@ -1979,71 +1985,87 @@ function parseJWTPayload(token) {
   return null;
 }
 
+const OPENAI_KICKOFF_ERROR_CODES = new Set([
+  'invalid_api_key', 'invalid_grant', 'authentication_error', 'permission_denied',
+  'rate_limit_exceeded', 'insufficient_quota', 'server_error', 'model_not_found',
+  'context_length_exceeded', 'max_output_tokens', 'content_filter',
+  'response_failed', 'response_incomplete', 'stream_incomplete', 'empty_response', 'invalid_response',
+]);
+
+function openAIKickoffFailure(error, stage) {
+  const opmKey = ['sync_auth_error', 'sync_id_error', 'sync_identity_error', 'sync_alias_error',
+    'sync_path_error', 'sync_config_error', 'sync_refresh_error', 'sync_refresh_uncertain',
+    'sync_recovery_error', 'sync_recovery_write_error'].includes(error?.opmKey) ? error.opmKey : null;
+  return {
+    stage, opmKey,
+    error: t(opmKey || `openai_kickoff_${stage}_failed`),
+    http_status: Number.isInteger(error?.statusCode) && error.statusCode >= 100 && error.statusCode <= 599 ? error.statusCode : null,
+    error_code: OPENAI_KICKOFF_ERROR_CODES.has(error?.code) ? error.code : null,
+  };
+}
+
 function extractOpenAIResponseText(data) {
-  if (!data) return null;
-
-  if (typeof data.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text.trim();
-  }
-
-  if (Array.isArray(data.output)) {
+  const fail = (fallback, detail) => {
+    const code = OPENAI_KICKOFF_ERROR_CODES.has(detail) ? detail : fallback;
+    throw Object.assign(new Error('OpenAI generation did not complete'), { code });
+  };
+  const checkFailure = (value, type) => {
+    const response = value.response || value;
+    if (type === 'error' || type === 'response.failed' || response.status === 'failed' || response.error || value.error) {
+      fail('response_failed', response.error?.code || value.error?.code || value.code);
+    }
+    if (type === 'response.incomplete' || response.status === 'incomplete') {
+      fail('response_incomplete', response.incomplete_details?.reason);
+    }
+  };
+  const completedText = response => {
+    if (!isPlainObject(response)) fail('invalid_response');
+    if (response.status !== undefined && response.status !== 'completed') fail('response_incomplete');
+    if (typeof response.output_text === 'string' && response.output_text.trim()) return response.output_text.trim();
     const texts = [];
-    for (const item of data.output) {
-      if (!item || typeof item !== 'object' || !Array.isArray(item.content)) continue;
-      for (const content of item.content) {
-        if (typeof content?.text === 'string' && content.text.trim()) {
-          texts.push(content.text.trim());
-        }
+    for (const item of Array.isArray(response.output) ? response.output : []) {
+      if (item?.type !== 'message' || (item.role !== undefined && item.role !== 'assistant')
+        || (item.status !== undefined && item.status !== 'completed')) continue;
+      for (const content of Array.isArray(item.content) ? item.content : []) {
+        if (content?.type === 'output_text' && typeof content.text === 'string') texts.push(content.text);
       }
     }
-
-    if (texts.length > 0) {
-      return texts.join(' ').trim();
-    }
-  }
-
+    const output = texts.join('').trim();
+    if (!output) fail('empty_response');
+    return output;
+  };
   if (typeof data === 'string') {
-    const trimmed = data.trim();
-    if (trimmed.includes('data:')) {
-      const deltas = [];
-      for (const line of trimmed.split('\n')) {
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-
-        try {
-          const parsed = JSON.parse(payload);
-
-          if (typeof parsed?.delta === 'string' && parsed.delta) {
-            deltas.push(parsed.delta);
-          }
-
-          if (typeof parsed?.output_text === 'string' && parsed.output_text) {
-            deltas.push(parsed.output_text);
-          }
-
-          if (Array.isArray(parsed?.output)) {
-            for (const item of parsed.output) {
-              if (!item || typeof item !== 'object' || !Array.isArray(item.content)) continue;
-              for (const content of item.content) {
-                if (typeof content?.text === 'string' && content.text.trim()) {
-                  deltas.push(content.text.trim());
-                }
-              }
-            }
-          }
-        } catch {}
-      }
-
-      if (deltas.length > 0) {
-        return deltas.join('').trim() || null;
-      }
-    }
-
-    return trimmed || null;
+    try { data = JSON.parse(data); } catch { /* Non-JSON responses must contain a completed SSE event. */ }
   }
-
-  return null;
+  if (isPlainObject(data)) {
+    checkFailure(data, data.type);
+    if (data.type === 'response.completed') return completedText(data.response);
+    if (data.type !== undefined && data.type !== 'response') fail('response_incomplete');
+    if (data.status !== 'completed' && !(data.status === undefined && typeof data.output_text === 'string')) fail('response_incomplete');
+    return completedText(data);
+  }
+  if (typeof data !== 'string' || !data.trim()) fail('empty_response');
+  let completed = null;
+  const frames = data.replace(/\r\n?/g, '\n').split('\n\n');
+  for (const [index, frame] of frames.entries()) {
+    const lines = frame.split('\n');
+    const payload = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /, '')).join('\n');
+    const event = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+    if (!payload || payload.trim() === '[DONE]') {
+      if (['error', 'response.failed', 'response.incomplete'].includes(event)) fail(event === 'response.incomplete' ? 'response_incomplete' : 'response_failed');
+      continue;
+    }
+    let value;
+    try { value = JSON.parse(payload); } catch { fail('invalid_response'); }
+    if (!isPlainObject(value) || (event && value.type && event !== value.type)) fail('invalid_response');
+    const type = value.type || event;
+    checkFailure(value, type);
+    if (index === frames.length - 1) fail('stream_incomplete');
+    if (type === 'response.completed') completed = completedText(value.response);
+  }
+  // Deltas, output_text.done and [DONE] alone are not evidence of response completion.
+  if (completed === null) fail('stream_incomplete');
+  return completed;
 }
 
 function resetTimeIsoFromSeconds(resetAtSeconds) {
@@ -2155,6 +2177,8 @@ function httpsRequest(url, options = {}, timeout = 10000) {
     const req = https.request(url, { ...options, timeout }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
+      res.on('error', reject);
+      res.on('aborted', () => reject(Object.assign(new Error('Response stream aborted'), { code: 'stream_incomplete' })));
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {

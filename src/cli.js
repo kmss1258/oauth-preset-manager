@@ -1279,7 +1279,7 @@ export async function cmdQuota(manager) {
   }
 }
 
-async function runOpenAIKickoffInteractive(manager) {
+export async function runOpenAIKickoffInteractive(manager) {
   console.clear();
   printHeader();
   console.log(chalk.yellow.bold('  🧠 ' + t('running_openai_kickoff')));
@@ -1291,38 +1291,54 @@ async function runOpenAIKickoffInteractive(manager) {
 
     if (results.length === 0) {
       console.log(chalk.yellow(`  ⚠ ${t('openai_kickoff_no_targets')}`));
+      console.log(`  ${t('openai_kickoff_not_requested')}`);
       console.log();
       return;
     }
 
-    const succeeded = results.filter(result => !result.error).length;
+    const attempted = results.filter(result => result.inference_attempted).length;
+    const succeeded = results.filter(result => result.inference_completed).length;
     const failed = results.length - succeeded;
 
     printInfoBox(t('openai_kickoff_title'), [
       `Model: ${batch.model}`,
       `${t('openai_kickoff_targets')}: ${results.length}`,
-      `${t('openai_kickoff_success')}: ${succeeded}`,
-      `${t('openai_kickoff_failed')}: ${failed}`,
+      `${t('openai_kickoff_attempted')}: ${attempted}`,
+      `${t('openai_kickoff_completed')}: ${succeeded}`,
+      `${t('openai_kickoff_not_requested')}: ${results.length - attempted}`,
+      `${t('openai_kickoff_unconfirmed')}: ${attempted - succeeded}`,
     ]);
+    console.log(chalk.dim(`  ${t('openai_kickoff_attempt_note')}`));
+    if (failed) process.exitCode = 1;
 
     for (const [index, result] of results.entries()) {
       const label = result.nickname || result.email || result.account_id || '-';
       const suffix = result.account_id ? chalk.dim(` (${result.account_id})`) : '';
-      const status = result.error ? chalk.red('✗') : chalk.green('✓');
+      const status = result.inference_completed ? chalk.green('✓') : chalk.red('✗');
       console.log(`  ${status} ${index + 1}. ${chalk.yellow(label)}${suffix}`);
+      console.log(`     ${result.inference_completed ? t('openai_kickoff_completed')
+        : result.inference_attempted ? `${t('openai_kickoff_attempted')} · ${t('openai_kickoff_unconfirmed')}`
+          : t('openai_kickoff_not_requested')}`);
 
-      if (result.output_text) {
+      if (result.inference_completed && result.output_text) {
         console.log(`     ${chalk.dim(result.output_text.slice(0, 80))}`);
       }
 
       if (result.error) {
-        console.log(`     ${chalk.red(result.error)}`);
+        const stage = result.inference_attempted ? 'inference' : 'auth';
+        const details = [result.http_status ? `HTTP ${result.http_status}` : '', result.error_code].filter(Boolean).join(' · ');
+        console.log(`     ${chalk.red(`${t('openai_kickoff_stage_' + stage)}: ${result.error}${details ? ` (${details})` : ''}`)}`);
       }
 
       console.log();
     }
   } catch (error) {
-    printOperationError(error);
+    const preflight = error.stage === 'preflight' && error.inference_attempted === false;
+    console.error(chalk.red(preflight
+      ? `${t('openai_kickoff_stage_preflight')}: ${t('openai_kickoff_preflight_failed')}`
+      : t('openai_kickoff_inference_failed')));
+    if (preflight && error.error) console.error(chalk.red(error.error));
+    process.exitCode = 1;
     console.log();
   }
 }
