@@ -98,12 +98,9 @@ opm q
 
 Inside Herdr, run **`opm q` from anywhere, including `~`**. The normal quota screen stays open; the calling Space also shows two compact rows (example values):
 
-```text
-Spaces
-  ● Home
-    CX ▰▰▰▱ 75% 2h14m
-    CC ▰▰▱▱ 38% 47m
-```
+![Herdr Spaces sidebar showing green CX and orange CC quota bars beside the OPM quota screen](docs/images/herdr-spaces-quota.png)
+
+*Actual Herdr terminal capture using example quota data. No real account details are shown.*
 
 - **CX is green; CC is orange.** These are the active **native Codex and Claude Code file-backed accounts**, not a total of saved presets. The percentage is remaining quota; the time is until reset. Codex prefers a 5-hour window, falls back to its actual primary window, and labels weekly-only quotas `7d` (unknown windows: `quota`).
 - No Herdr rebuild, extra pane, workspace rename, or daemon. Herdr 0.8.2's workspace metadata and styled Space rows are used. Only the expanded desktop sidebar shows custom rows; collapsed/mobile layouts do not.
