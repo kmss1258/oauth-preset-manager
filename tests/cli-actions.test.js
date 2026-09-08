@@ -202,7 +202,8 @@ test('countdown tick addresses only the fixed status row', () => {
 
   assert.match(formatQuotaCountdownLine(12, now), new RegExp(`Current KST 23:05:06 🌙 · ${formatPeakStatus(getPeakState(now))} · Refresh in 12s`));
   updateQuotaCountdownLine(11, output, now);
-  assert.match(writes[0], new RegExp(`${ESC}\\[2;1H${ESC}\\[2K  Current KST 23:05:06 🌙 · .* · Refresh in 11s`));
+  assert.match(writes[0], new RegExp(`${ESC}\\[2;1H${ESC}\\[2K${ESC}\\[\\?7l  Current KST 23:05:06 🌙 · .* · Refresh in 11s`));
+  assert.ok(writes[0].endsWith(`${ESC}[?7h`));
   assert.ok(!writes[0].includes('\n'));
 });
 

@@ -153,7 +153,7 @@ export function getQuotaRefreshCountdownSeconds(deadline, now = Date.now()) {
 }
 
 export function formatQuotaRefreshCountdown(seconds) {
-  return t('quota_auto_refresh_countdown', { seconds });
+  return t('quota_auto_refresh_countdown', { seconds: String(seconds).padStart(2, ' ') });
 }
 
 export async function getRootDiskLine(statfs = fs.statfs) {
@@ -185,19 +185,29 @@ export function formatQuotaCountdownLine(seconds, now = new Date(), peakState = 
     : ` ${chalk.gray('·')} ${chalk.yellow(formatQuotaRefreshCountdown(seconds))}`;
   let line = `  ${chalk.cyan(t('quota_current_time', { time, icon }))} ${chalk.gray('·')} ${colorizePeakStatus(peakState, formatPeakStatus(peakState))}${refreshSegment}`;
   const width = options.width ?? (options.output?.columns ? options.output.columns - 1 : Infinity);
-  if (stringWidth(line) > width) {
+  const showBorder = peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive);
+  const contentWidth = Math.max(0, width - (showBorder ? 2 : 0));
+  if (stringWidth(line) > contentWidth) {
     const refresh = seconds == null ? '' : formatQuotaRefreshCountdown(seconds);
     line = [refresh, `${time} KST`, formatPeakStatus(peakState)].filter(Boolean).join(' · ');
-    if (stringWidth(refresh) > width) line = seconds == null ? time : `↻ ${seconds}s`;
+    if (stringWidth(refresh) > contentWidth) line = seconds == null ? time : `↻ ${String(seconds).padStart(2, ' ')}s`;
   }
-  const bordered = peakState.phase === 'active' && shouldRenderPeakBorder(options.output, options.interactive)
-    ? peakBorder(line, epochSeconds(now))
+  const bordered = showBorder
+    ? peakBorder(fitQuotaLine(line, contentWidth), epochSeconds(now))
     : line;
   return fitQuotaLine(bordered, width);
 }
 
 export function updateQuotaCountdownLine(seconds, output = process.stdout, now = new Date()) {
-  output.write(`\u001b[2;1H\u001b[2K${formatQuotaCountdownLine(seconds, now, getPeakState(now), { output, interactive: true })}`);
+  const line = formatQuotaCountdownLine(seconds, now, getPeakState(now), { output, interactive: true });
+  // Terminal emoji widths can differ from string-width. Never spill into row 3.
+  output.write(`\x1b[2;1H\x1b[2K\x1b[?7l${line}\x1b[?7h`);
+}
+
+export function writeQuotaFrame(frame, output = process.stdout) {
+  const lines = frame.lines.map((line, index) => `\x1b[${index + 1};1H${line}`).join('');
+  // Address each physical row; restore normal wrapping in the same write.
+  output.write(`\x1b[H\x1b[2J\x1b[?7l${lines}\x1b[?7h`);
 }
 
 export function normalizeQuotaActionKey(text) {
@@ -1086,6 +1096,8 @@ export function buildQuotaFrame(results, options = {}) {
   const body = [];
   const accountStarts = [];
   const items = getQuotaTableRowItems(normalizeQuotaResults(results), showGoogle);
+  const highlightTop = interactive && (options.output || process.stdout).isTTY && !process.env.NO_COLOR;
+  const emphasize = (result, text) => highlightTop && result === items[0] ? chalk.bgBlackBright.white.bold(text) : text;
   const account = result => {
     if (result.provider === 'commandcode') return formatCommandCodeAccountCell(result);
     const sources = result.presets || [];
@@ -1113,13 +1125,19 @@ export function buildQuotaFrame(results, options = {}) {
     for (const result of items) {
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
         : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
-      const details = (result.provider === 'commandcode' ? [] : windows(result).slice(2)).map(([label, window]) =>
-        `${label}\n${formatPercent(window?.percent_remaining, { ...percentOptions, width: Math.min(10, accountWidth - 5) })}\n${formatReset(window?.reset_time_iso)}`);
+      const details = (result.provider === 'commandcode' ? [] : windows(result).slice(2)).map(([label, window]) => {
+        const bar = formatPercent(window?.percent_remaining, { ...percentOptions,
+          width: Math.min(10, accountWidth - stringWidth(label) - 6) });
+        const line = `${label} ${bar}`;
+        const reset = formatReset(window?.reset_time_iso);
+        return stringWidth(`${line} · ${reset}`) <= accountWidth ? `${line} · ${reset}` : `${line}\n${reset}`;
+      });
       table.push([
-        result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider,
+        emphasize(result, result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider),
         result.error ? chalk.red(result.error) : formatPercent(result.daily?.percent_remaining, percentOptions),
         formatReset(result.daily?.reset_time_iso), formatPercent(result.weekly?.percent_remaining, percentOptions),
-        formatReset(result.weekly?.reset_time_iso), [account(result), ...details].join('\n').split('\n').map(line => fitQuotaLine(line, accountWidth)).join('\n'),
+        formatReset(result.weekly?.reset_time_iso), [account(result), ...details].join('\n').split('\n').map((line, index) =>
+          index === 0 ? emphasize(result, fitQuotaLine(line, accountWidth)) : fitQuotaLine(line, accountWidth)).join('\n'),
       ].map(cell => String(cell).split('\n').map(line => fitQuotaLine(line, Infinity)).join('\n')));
     }
     if (items.length) body.push(...table.toString().split('\n'));
@@ -1127,8 +1145,8 @@ export function buildQuotaFrame(results, options = {}) {
     for (const result of items) {
       accountStarts.push(body.length);
       const provider = { openai: 'OpenAI', claude: 'Claude', opencodego: 'OpenCode Go', commandcode: 'Command Code', google: 'Google' }[result.provider] || result.provider;
-      body.push(chalk.cyan.bold(`● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`));
-      body.push(...account(result).split('\n').map(line => chalk.yellow(line)));
+      body.push(chalk.cyan.bold(emphasize(result, `● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`)));
+      body.push(...account(result).split('\n').map((line, index) => chalk.yellow(index === 0 ? emphasize(result, line) : line)));
       if (result.error) body.push(chalk.red(result.error));
       else for (const [label, window] of windows(result)) {
         if (!window) continue;
@@ -1223,7 +1241,7 @@ export async function cmdQuota(manager) {
           rootDiskLine, output: process.stdout, refreshResults: manager.lastOpenAIRefreshResults,
           presetMetadata: manager.config?.presets || {} });
         page = frame.page;
-        if (interactive) process.stdout.write('\x1b[H\x1b[2J' + frame.lines.join('\r\n'));
+        if (interactive) writeQuotaFrame(frame);
         else { process.stdout.write(frame.lines.join('\n') + '\n'); break; }
         dimensions = currentDimensions;
         needsRender = false;

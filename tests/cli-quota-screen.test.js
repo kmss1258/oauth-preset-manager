@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import chalk from 'chalk';
 import stringWidth from 'string-width';
 import stripAnsi from 'strip-ansi';
-import { buildQuotaFrame, cmdQuota, fitQuotaLine, formatQuotaCountdownLine, normalizeQuotaResults } from '../src/cli.js';
+import { buildQuotaFrame, cmdQuota, fitQuotaLine, formatQuotaCountdownLine, normalizeQuotaResults, writeQuotaFrame } from '../src/cli.js';
 import { setLanguage } from '../src/i18n.js';
 
 const quota = { percent_remaining: 75, reset_time_iso: '2099-09-07T12:00:00Z' };
@@ -50,6 +50,50 @@ test('narrow quota keeps bars, percentages, weekly/monthly/scoped windows and de
     assert.match(text, /Sonnet/);
     assert.doesNotMatch(text, /13\.00 credits|12\.34 used/);
     assert.match(text, /42 requests/);
+  }
+});
+
+test('only the first normalized account is highlighted without changing layout or source data', () => {
+  const oldLevel = chalk.level;
+  const oldNoColor = process.env.NO_COLOR;
+  const items = [
+    { provider: 'claude', account_id: 'other-account', daily: quota, weekly: quota },
+    { provider: 'openai', account_id: 'top-account', presets: ['(Current Active)'], daily: quota, weekly: quota },
+  ];
+  const original = structuredClone(items);
+  try {
+    chalk.level = 3;
+    delete process.env.NO_COLOR;
+    for (const columns of [39, 99, 100, 120, 160]) {
+      const options = { columns, rows: 40, interactive: true, output: { isTTY: true }, now: new Date('2026-09-06T12:00:00Z') };
+      const frame = buildQuotaFrame(items, options);
+      const plain = buildQuotaFrame(items, { ...options, output: { isTTY: false } });
+      assert.deepEqual(frame.lines.map(stripAnsi), plain.lines.map(stripAnsi));
+      assert.ok(frame.lines.every(line => stringWidth(line) <= columns - 1));
+      const highlighted = frame.lines.filter(line => line.includes('\x1b[100m'));
+      assert.ok(highlighted.some(line => line.includes('top-account')));
+      assert.ok(highlighted.some(line => /openai|OpenAI/.test(line)));
+      assert.ok(highlighted.every(line => !line.includes('other-account') && !line.includes('claude') && !line.includes('Claude')));
+      assert.ok(!plain.lines.join('\n').includes('\x1b[100m'));
+      assert.ok(!buildQuotaFrame(items, { ...options, interactive: false }).lines.join('\n').includes('\x1b[100m'));
+      process.env.NO_COLOR = '1';
+      assert.ok(!buildQuotaFrame(items, options).lines.join('\n').includes('\x1b[100m'));
+      delete process.env.NO_COLOR;
+    }
+    const options = { columns: 39, rows: 10, interactive: true, output: { isTTY: true } };
+    const first = buildQuotaFrame(items, options);
+    assert.ok(first.pages > 1);
+    assert.ok(first.lines.join('\n').includes('\x1b[100m'));
+    for (let page = 1; page < first.pages; page++) {
+      assert.ok(!buildQuotaFrame(items, { ...options, page }).lines.join('\n').includes('\x1b[100m'));
+    }
+    chalk.level = 0;
+    assert.ok(!buildQuotaFrame(items, options).lines.join('\n').includes('\x1b[100m'));
+    assert.deepEqual(items, original);
+  } finally {
+    chalk.level = oldLevel;
+    if (oldNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = oldNoColor;
   }
 });
 
@@ -158,6 +202,134 @@ test('countdown prioritizes refresh at narrow widths and never wraps', () => {
     }
   }
   setLanguage('en');
+});
+
+test('countdown digit transitions keep a stable layout at every width including emoji boundaries', () => {
+  try {
+    for (const language of ['en', 'ko']) {
+      setLanguage(language);
+      for (const now of [new Date('2026-09-07T01:00:00Z'), new Date('2026-09-07T14:00:00Z')]) {
+        for (let width = 8; width <= 160; width++) {
+          const lines = [60, 59, 10, 9, 1, 60].map(seconds => stripAnsi(formatQuotaCountdownLine(seconds, now, undefined, { width })));
+          const shape = line => line.replace(/[\d ]/g, '#');
+          assert.ok(lines.every(line => stringWidth(line) === stringWidth(lines[0])), `${language}/${width}: ${lines}`);
+          assert.ok(lines.every(line => shape(line) === shape(lines[0])), `${language}/${width}: ${lines}`);
+        }
+      }
+    }
+  } finally { setLanguage('en'); }
+});
+
+test('Go monthly percentage and reset use one line when possible and two at the table boundary', () => {
+  const item = { provider: 'opencodego', account_id: 'wrk_test', daily: quota, weekly: quota,
+    monthly_percent: 64, monthly_reset_iso: new Date(Date.now() + (720 * 60 + 59) * 60000 + 30000).toISOString() };
+  for (const columns of [39, 99, 100, 120, 160]) {
+    const lines = buildQuotaFrame([item], { columns }).lines.map(stripAnsi);
+    const cells = columns >= 100 ? lines.filter(line => line.startsWith('│')).slice(1).map(line => line.split('│').at(-2).trim()).filter(Boolean) : lines;
+    const monthly = cells.findIndex(line => /^M\s/.test(line));
+    assert.ok(monthly >= 0, `${columns}: ${cells}`);
+    assert.match(cells[monthly], /64%/);
+    assert.match(cells.slice(monthly).join('\n'), /720h 59m/);
+    if (columns === 100) assert.equal(cells.length - monthly, 2);
+    else assert.match(cells[monthly], /64% · 720h 59m/);
+  }
+});
+
+test('frame writes address physical rows with wrapping disabled and restore it immediately', () => {
+  const writes = [];
+  writeQuotaFrame({ lines: ['emoji 👩‍💻'.repeat(10), 'status', 'body'] }, { write: text => writes.push(text) });
+  assert.equal(writes.length, 1);
+  assert.ok(writes[0].startsWith('\x1b[H\x1b[2J\x1b[?7l\x1b[1;1H'));
+  assert.ok(writes[0].includes('\x1b[2;1Hstatus\x1b[3;1Hbody'));
+  assert.ok(writes[0].endsWith('\x1b[?7h'));
+});
+
+test('isolated tmux preserves physical rows through ticks, emoji overflow, resize and exit', {
+  skip: !process.env.OPM_TMUX_TEST, timeout: 120000,
+}, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'opm-pty-'));
+  const socket = join(home, 'socket');
+  const tmux = (...args) => execFileSync(process.env.OPM_TMUX_TEST, ['-S', socket, ...args], { encoding: 'utf8' });
+  t.after(async () => {
+    try { tmux('kill-server'); } catch {}
+    await rm(home, { recursive: true, force: true });
+  });
+  const fixture = join(home, 'fixture.mjs');
+  await writeFile(fixture, `
+    import { cmdQuota, buildQuotaFrame, writeQuotaFrame, updateQuotaCountdownLine } from ${JSON.stringify(new URL('../src/cli.js', import.meta.url).href)};
+    const results = [{ provider: 'opencodego', account_id: 'wrk_pty', monthly_percent: 64,
+      monthly_reset_iso: new Date(Date.now() + 30 * 86400000).toISOString() }];
+    globalThis.fetch = () => { throw new Error('network forbidden'); };
+    process.stdout.write('BEFORE_QUOTA\\r\\n');
+    await cmdQuota({ collectAllQuota: async () => results, cacheQuotaResults: async () => {} });
+    process.stdout.write('RESTORED\\r\\n');
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    let seconds = 60;
+    const now = new Date('2026-09-07T01:00:00Z');
+    const draw = () => writeQuotaFrame(buildQuotaFrame(results, {
+      columns: process.stdout.columns, rows: process.stdout.rows, interactive: true,
+      seconds, now, output: process.stdout, rootDiskLine: '👩‍💻'.repeat(100),
+    }));
+    process.stdout.on('resize', draw);
+    process.stdin.on('data', data => {
+      const key = data.toString();
+      if (key === 's') { process.stdout.write('\\x1b[?1049h'); draw(); }
+      else if (key === 'e') {
+        // Deliberately exceed physical width: emulate a terminal/library width disagreement.
+        writeQuotaFrame({ lines: ['👩‍💻'.repeat(100), 'status', 'ROW_THREE_SENTINEL'] });
+        updateQuotaCountdownLine(seconds, { columns: 300, isTTY: true,
+          write: text => process.stdout.write(text) }, now);
+      } else {
+        seconds = { a: 60, b: 59, c: 10, d: 9, e: 1, f: 60 }[key] ?? 1;
+        updateQuotaCountdownLine(seconds, process.stdout, now);
+      }
+    });
+  `);
+  tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'quota', '-x', '120', '-y', '24',
+    `exec env HOME='${home}' OPM_LANG=en '${process.execPath}' '${fixture}'`);
+  const capture = () => tmux('capture-pane', '-p', '-t', 'quota').split(/\r?\n/).map(line => line.trimEnd());
+  const waitFor = async predicate => {
+    for (let i = 0; i < 150; i++) {
+      const lines = capture();
+      if (predicate(lines)) return lines;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail(capture().join('\n'));
+  };
+  await waitFor(lines => lines.some(line => line.includes('wrk_pty')));
+  for (const width of [39, 99, 100, 120, 160]) {
+    tmux('resize-window', '-t', 'quota', '-x', String(width), '-y', '24');
+    const lines = await waitFor(lines => lines.some(line => line.includes('64%')) &&
+      (width < 100 ? lines[2].includes('● OpenCode Go') : lines[2].startsWith('┌') && lines[2].trimEnd().length === width - 1));
+    assert.ok(lines.some(line => /719h|720h/.test(line)));
+    t.diagnostic(`cmdQuota PTY resize ${width}: monthly percentage/reset visible`);
+  }
+  tmux('send-keys', '-t', 'quota', 'q');
+  await waitFor(lines => lines.some(line => line.includes('RESTORED')));
+  assert.match(capture().join('\n'), /BEFORE_QUOTA/);
+  assert.equal(tmux('display-message', '-p', '-t', 'quota', '#{alternate_on}:#{wrap_flag}:#{cursor_flag}').trim(), '0:1:1');
+  tmux('send-keys', '-t', 'quota', 's');
+  await waitFor(lines => lines.some(line => line.includes('wrk_pty')));
+  for (const width of [39, 80, 81, 99, 100, 120, 160]) {
+    tmux('resize-window', '-t', 'quota', '-x', String(width), '-y', '24');
+    const before = await waitFor(lines => width < 100 ? lines[2].includes('● OpenCode Go') &&
+      lines[22] === (width >= 77 ? '[r] Refresh  [g] Toggle Google details  [q] Exit' : '[r] [g] [q]')
+      : lines[2].startsWith('┌') && lines[2].length === width - 1);
+    for (const [key, seconds] of [['a', 60], ['b', 59], ['c', 10], ['d', 9], ['z', 1], ['f', 60]]) {
+      tmux('send-keys', '-t', 'quota', key);
+      const lines = await waitFor(lines => lines[1].includes(`Refresh in ${String(seconds).padStart(2)}s`));
+      assert.deepEqual(lines.slice(2), before.slice(2), `${width}/${seconds}: body changed`);
+      assert.equal((lines.join('\n').match(/Refresh in/g) || []).length, 1);
+      assert.equal(tmux('display-message', '-p', '-t', 'quota', '#{wrap_flag}').trim(), '1');
+    }
+    t.diagnostic(`PTY ${width}: 60 -> 59 -> 10 -> 9 -> 1 -> 60; body unchanged, wrapping restored`);
+  }
+  tmux('resize-window', '-t', 'quota', '-x', '39', '-y', '24');
+  await waitFor(lines => lines[2].includes('● OpenCode Go'));
+  tmux('send-keys', '-t', 'quota', 'e');
+  await waitFor(lines => lines[2] === 'ROW_THREE_SENTINEL');
+  assert.equal(capture()[3], '');
 });
 
 test('width clipping preserves graphemes and strips untrusted terminal control sequences', () => {
