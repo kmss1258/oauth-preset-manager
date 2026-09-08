@@ -1,5 +1,9 @@
 # OAuth Preset Manager (OPM) - Node.js Edition
 
+![OPM — Your quota. In your sidebar. Live Codex and Claude Code quota in Herdr.](docs/images/opm-hero.png)
+
+*Actual Herdr UI captures with example quota data, presented in a custom hero illustration.*
+
 **Manage your OAuth tokens like a pro.** Select one preset to switch the same OpenAI OAuth account in OpenCode, Codex and claude-code-proxy's Codex provider together, while preserving other provider entries and checking detailed quota usage.
 
 Now rewritten in **Node.js** for better performance and cross-platform compatibility!

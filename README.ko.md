@@ -1,5 +1,9 @@
 # 🔐 OAuth Preset Manager
 
+![OPM — 좌측 사이드바에서 바로 확인하는 Codex·Claude Code 실시간 쿼터](docs/images/opm-hero.png)
+
+*예시 데이터로 실행한 실제 Herdr UI 캡처를 제품 소개 이미지로 구성했습니다.*
+
 프리셋 하나로 같은 OpenAI OAuth 계정을 OpenCode, Codex, claude-code-proxy의 Codex 제공자에 함께 적용하는 도구입니다. 다른 제공자의 인증 항목도 프리셋으로 관리합니다.
 
 ---
