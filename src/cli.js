@@ -1122,7 +1122,10 @@ export function buildQuotaFrame(results, options = {}) {
       colWidths: [14, 18, 12, 18, 12, width - 81],
       style: { head: [], border: ['gray'], compact: true }, wordWrap: true,
     });
-    for (const result of items) {
+    for (const [index, result] of items.entries()) {
+      if (index > 0 && hasPresetLabel(items[index - 1], 'Current Active') && !hasPresetLabel(result, 'Current Active')) {
+        table.push(['', '', '', '', '', '']);
+      }
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
         : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
       const details = (result.provider === 'commandcode' ? [] : windows(result).slice(2)).map(([label, window]) => {

@@ -97,6 +97,51 @@ test('only the first normalized account is highlighted without changing layout o
   }
 });
 
+test('quota separates the active group once in wide tables without adding compact gaps', () => {
+  const active = [
+    { provider: 'openai', account_id: 'active-one', presets: ['(Current Active)'], daily: quota },
+    { provider: 'claude', account_id: 'active-two', presets: ['(Current Active)'], daily: quota },
+  ];
+  const saved = ['saved-one', 'saved-two'].map(account_id => ({ provider: 'openai', account_id, daily: quota }));
+  for (const columns of [39, 99, 100, 120, 180]) {
+    for (const current of [[], active.slice(0, 1), active]) {
+      for (const remaining of [[], saved]) {
+        if (!current.length && !remaining.length) continue;
+        const items = [...remaining, ...current];
+        const lines = buildQuotaFrame(items, { columns }).lines.map(stripAnsi);
+        if (columns >= 100) {
+          const blankRows = lines.flatMap((line, index) => /^│[ │]+│$/.test(line) ? [index] : []);
+          assert.equal(blankRows.length, current.length && remaining.length ? 1 : 0);
+          if (blankRows.length) {
+            const boundary = blankRows[0];
+            const activeLines = buildQuotaFrame(current, { columns }).lines.map(stripAnsi);
+            assert.deepEqual(lines.slice(2, boundary), activeLines.slice(2, -1));
+            assert.ok(lines[boundary + 1].includes('saved-one'));
+            assert.equal(lines[boundary].split('│').length, 8);
+          }
+        } else {
+          assert.equal(lines.filter(line => line === '').length, items.length - 1);
+          assert.ok(lines.at(-1));
+          for (let index = 1; index < lines.length; index++) {
+            if (lines[index].startsWith('●') && index > 2) {
+              assert.equal(lines[index - 1], '');
+              assert.notEqual(lines[index - 2], '');
+            }
+          }
+        }
+        for (const rows of [5, 10, 24]) {
+          const options = { columns, rows, interactive: true };
+          const first = buildQuotaFrame(items, options);
+          const pages = Array.from({ length: first.pages }, (_, page) => buildQuotaFrame(items, { ...options, page }));
+          assert.ok(pages.every(frame => frame.lines.length <= rows - 1 && frame.lines.every(line => stringWidth(line) <= columns - 1)));
+          const pagedBody = pages.flatMap(frame => frame.lines.slice(2, -1)).map(stripAnsi).filter(Boolean);
+          assert.deepEqual(pagedBody, lines.slice(2).filter(Boolean));
+        }
+      }
+    }
+  }
+});
+
 test('account display selects two newest metadata dates without mutating or merging source rows', () => {
   const presetMetadata = {
     old: { last_used: '2026-01-01', created_at: '2026-12-01' },
