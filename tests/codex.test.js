@@ -595,13 +595,21 @@ test('kickoff refuses conflicting exact sidecar identity and cached wrong-user r
   wrong.tokens.access_token = bundle.tokens.access_token;
   wrong.tokens.refresh_token = bundle.tokens.refresh_token;
   await manager._writeCodexSidecar('work', bytes(wrong));
-  await assert.rejects(manager.runOpenAIKickoffBatch(), errorKey('sync_identity_error'));
+  await assert.rejects(manager.collectOpenAIKickoffTargets(), errorKey('sync_identity_error'));
+  let batch = await manager.runOpenAIKickoffBatch();
+  assert.equal(batch.results.length, 1);
+  assert.equal(batch.results[0].error, t('sync_recovery_error'));
+  assert.equal(batch.results[0].inference_attempted, false);
   await manager._writeCodexSidecar('work', null);
   await manager._writeJsonAtomic(manager._recoveryPath(bundle.tokens.refresh_token), {
     status: 'received', source_refresh: bundle.tokens.refresh_token, source_accesses: [bundle.tokens.access_token],
     source_identity: { account: bundle.tokens.account_id }, received_at: new Date().toISOString(), response: response(native('wrong-member')),
   });
-  await assert.rejects(manager.runOpenAIKickoffBatch(), errorKey('sync_recovery_error'));
+  await assert.rejects(manager.collectOpenAIKickoffTargets(), errorKey('sync_recovery_error'));
+  batch = await manager.runOpenAIKickoffBatch();
+  assert.equal(batch.results.length, 1);
+  assert.equal(batch.results[0].error, t('sync_recovery_error'));
+  assert.equal(batch.results[0].inference_attempted, false);
   await assert.rejects(manager._ensureOpenAIAccessToken(manager._extractOpenAIOAuth(strong)), errorKey('sync_recovery_error'));
 });
 

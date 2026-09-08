@@ -1549,8 +1549,9 @@ export class PresetManager {
     };
   }
 
-  async collectOpenAIKickoffTargets() {
+  async collectOpenAIKickoffTargets({ isolateFailures = false } = {}) {
     const tokenMap = new Map();
+    const groups = [];
 
     const addTarget = async (entry, label, nickname = null) => {
       if (!entry?.access) return;
@@ -1582,7 +1583,7 @@ export class PresetManager {
         if (!existing.nickname && nickname) {
           existing.nickname = nickname;
         }
-        return;
+        return existing;
       }
 
       tokenMap.set(key, {
@@ -1596,21 +1597,83 @@ export class PresetManager {
         labels: new Set([label]),
         nickname: nickname || identity.email || null,
       });
+      return tokenMap.get(key);
+    };
+
+    const collectSource = async (path, label, nickname) => {
+      const group = { keys: new Set(), labels: new Set([label]), targets: [], failed: false, nickname };
+      try {
+        const bytes = await readBytes(path);
+        if (bytes === null) return;
+        const auth = parseAuth(bytes);
+        if (isolateFailures) {
+          // Links only propagate blocks; _recoverOpenAI remains the authority for usable credentials.
+          for (const raw of [auth.openai, auth.codex]) {
+            if (raw?.type !== 'oauth') continue;
+            let refresh = raw.refresh;
+            if (typeof raw.access === 'string' && raw.access) group.keys.add(`access:${raw.access}`);
+            while (typeof refresh === 'string' && refresh && !group.keys.has(`refresh:${refresh}`)) {
+              group.keys.add(`refresh:${refresh}`);
+              try {
+                const journal = await readBytes(this._recoveryPath(refresh));
+                if (journal === null) break;
+                const log = parseAuth(journal);
+                for (const access of [log.response?.access_token, ...(Array.isArray(log.source_accesses) ? log.source_accesses : [])]) {
+                  if (typeof access === 'string' && access) group.keys.add(`access:${access}`);
+                }
+                refresh = log.response?.refresh_token;
+              } catch { group.failed = true; break; }
+            }
+          }
+        }
+        const target = await addTarget(this._extractOpenAIOAuth(auth, true), label, nickname);
+        if (target) {
+          group.targets.push(target);
+          group.keys.add(target.refresh ? `refresh:${target.refresh}` : `access:${target.access}`);
+        } else if (!group.failed) return;
+      } catch (error) {
+        if (!isolateFailures) throw error;
+        group.failed = true;
+      }
+      if (!isolateFailures) return;
+      // ponytail: linear group scan for small local preset lists; index keys if scale warrants it.
+      for (let i = groups.length - 1; i >= 0; i--) {
+        const existing = groups[i];
+        if (![...existing.keys].some(key => group.keys.has(key))) continue;
+        for (const key of existing.keys) group.keys.add(key);
+        for (const label of existing.labels) group.labels.add(label);
+        group.targets.push(...existing.targets);
+        group.failed ||= existing.failed;
+        groups.splice(i, 1);
+      }
+      groups.push(group);
     };
 
     const authPath = this.getAuthPath();
-    const activeBytes = await readBytes(authPath);
-    if (activeBytes !== null) {
-      const entry = this._extractOpenAIOAuth(parseAuth(activeBytes), true);
-      await addTarget(entry, `(Current Active: ${authPath.replace(homedir(), '~')})`, null);
-    }
+    await collectSource(authPath, `(Current Active: ${authPath.replace(homedir(), '~')})`, null);
 
-    const presetData = await this.listPresetAuthData();
-    for (const [presetName, authData] of presetData) {
-      const entry = this._extractOpenAIOAuth(authData, true);
-      if (!entry) continue;
-      const display = join(this.presetsDir, `${presetName}.json`).replace(homedir(), '~');
-      await addTarget(entry, `${presetName} (${display})`, presetName);
+    if (isolateFailures) {
+      await safePath(this.presetsDir, true);
+      for (const file of (await fs.readdir(this.presetsDir)).filter(file => file.endsWith('.json')).sort()) {
+        const path = join(this.presetsDir, file);
+        await collectSource(path, `${file.slice(0, -5)} (${path.replace(homedir(), '~')})`, file.slice(0, -5));
+      }
+      return groups.map(group => {
+        let target = group.targets.find(target => target.refresh) || group.targets[0];
+        try {
+          const context = assertIdentity(...group.targets.map(entryIdentity));
+          if (target) target = { ...target, opm_identity: context, accountId: context.account || target.accountId,
+            account_id: context.account || target.account_id, user_id: context.user || target.user_id };
+        } catch { group.failed = true; }
+        const presets = [...group.labels].sort();
+        if (group.failed) return { auth_failure: true, nickname: group.nickname, presets };
+        return { ...target, presets };
+      });
+    } else {
+      for (const [presetName, authData] of await this.listPresetAuthData()) {
+        const display = join(this.presetsDir, `${presetName}.json`).replace(homedir(), '~');
+        await addTarget(this._extractOpenAIOAuth(authData, true), `${presetName} (${display})`, presetName);
+      }
     }
 
     return Array.from(tokenMap.values()).map(target => ({
@@ -1621,7 +1684,7 @@ export class PresetManager {
 
   async runOpenAIKickoffBatch(timeoutSeconds = 30) {
     let targets;
-    try { targets = await this.collectOpenAIKickoffTargets(); }
+    try { targets = await this.collectOpenAIKickoffTargets({ isolateFailures: true }); }
     catch (error) {
       const failure = openAIKickoffFailure(error, 'preflight');
       throw Object.assign(new Error(failure.error), failure, {
@@ -1638,7 +1701,11 @@ export class PresetManager {
     }
 
     const results = await Promise.all(
-      targets.map(target => this._runOpenAIKickoffForTarget(target, timeoutSeconds))
+      targets.map(target => target.auth_failure ? {
+        provider: 'openai', nickname: target.nickname, presets: target.presets, model: OPENAI_KICKOFF_MODEL,
+        ...openAIKickoffFailure(syncError('sync_recovery_error'), 'auth'),
+        output_text: null, inference_attempted: false, inference_completed: false,
+      } : this._runOpenAIKickoffForTarget(target, timeoutSeconds))
     );
 
     return {

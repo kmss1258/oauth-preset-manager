@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -321,17 +321,15 @@ test('direct JSON completion and event-only SSE type are supported without expos
   assert.doesNotMatch(result.output_text, /TEST-access|TEST-refresh|Cookie:|private/);
 });
 
-test('strict collection failure carries preflight/no-inference state and never sends a suspect target', async context => {
+test('strict collection still rejects aliases while batch isolates them; top-level failures remain preflight', async context => {
   const { manager } = await setup(context);
   await writeFile(manager.getAuthPath(), JSON.stringify({ openai: target('one'), codex: target('other') }));
-  await assert.rejects(manager.runOpenAIKickoffBatch(), error => {
-    assert.equal(error.opmKey, 'sync_alias_error');
-    assert.equal(error.stage, 'preflight');
-    assert.equal(error.inference_attempted, false);
-    assert.equal(error.inference_completed, false);
-    assert.doesNotMatch(error.message, /TEST-access|TEST-refresh/);
-    return true;
-  });
+  await assert.rejects(manager.collectOpenAIKickoffTargets(), { opmKey: 'sync_alias_error' });
+  const batch = await manager.runOpenAIKickoffBatch();
+  assert.equal(batch.results.length, 1);
+  assert.equal(batch.results[0].stage, 'auth');
+  assert.equal(batch.results[0].inference_attempted, false);
+  assert.equal(batch.results[0].error, t('sync_recovery_error'));
   manager.collectOpenAIKickoffTargets = async () => { throw new Error('TEST-SECRET upstream body Cookie: private'); };
   await assert.rejects(manager.runOpenAIKickoffBatch(), error => {
     assert.equal(error.stage, 'preflight');
@@ -339,6 +337,133 @@ test('strict collection failure carries preflight/no-inference state and never s
     assert.doesNotMatch(error.message, /TEST-SECRET|Cookie:/);
     return true;
   });
+});
+
+for (const fault of ['journal', 'active-json', 'preset-json', 'sidecar', 'member', 'aliases', 'converged-sidecar', 'converged-journal', 'access-sidecar', 'converged-access-sidecar']) {
+  for (const reversed of [false, true]) {
+    test(`batch isolates ${fault}, blocks connected lineage, order reversed=${reversed}`, async context => {
+      const { manager } = await setup(context);
+      const bad = target('bad');
+      const peer = { ...bad };
+      const badPath = fault === 'active-json' ? manager.getAuthPath() : join(manager.presetsDir, `${reversed ? 'z' : 'a'}-bad.json`);
+      const badName = `${reversed ? 'z' : 'a'}-bad`;
+      const peerPath = join(manager.presetsDir, `${reversed ? 'a' : 'z'}-peer.json`);
+      const healthyPath = join(manager.presetsDir, 'healthy.json');
+      const tracked = [badPath, healthyPath];
+      const hasPeer = !['journal', 'active-json', 'preset-json'].includes(fault);
+      if (fault.startsWith('converged-')) {
+        peer.refresh = 'TEST-refresh-R1';
+        peer.access = 'TEST-access-R1';
+        const journalPath = manager._recoveryPath(bad.refresh);
+        await manager._writeJsonAtomic(journalPath, {
+          status: 'received', source_refresh: bad.refresh, source_accesses: [bad.access],
+          source_identity: bad.opm_identity, received_at: new Date().toISOString(),
+          response: { access_token: peer.access, refresh_token: peer.refresh, expires_in: 3600,
+            ...(fault === 'converged-journal' ? { id_token: 'TEST-SECRET-invalid-id' } : {}) },
+        });
+        tracked.push(journalPath);
+      }
+      if (fault === 'member') bad.opm_identity = { ...bad.opm_identity, user: 'different-member' };
+      if (fault.includes('access-sidecar')) delete peer.refresh;
+      if (fault === 'journal') {
+        const journalPath = manager._recoveryPath(bad.refresh);
+        await manager._writeJsonAtomic(journalPath, { status: 'pending', secret: 'TEST-SECRET' });
+        tracked.push(journalPath);
+      }
+      if (fault.endsWith('sidecar')) {
+        await manager._writeCodexSidecar(badName, Buffer.from('{TEST-SECRET-invalid-sidecar'));
+        tracked.push(manager._codexSidecarPath(badName));
+      }
+      await writeFile(badPath, fault.endsWith('json') ? '{TEST-SECRET-malformed' : JSON.stringify({ openai: bad,
+        ...(fault === 'aliases' ? { codex: target('alias') } : {}) }));
+      if (hasPeer) {
+        await writeFile(peerPath, JSON.stringify({ openai: peer }));
+        tracked.push(peerPath);
+      }
+      if (fault === 'aliases') {
+        const aliasPath = join(manager.presetsDir, 'alias-peer.json');
+        await writeFile(aliasPath, JSON.stringify({ codex: target('alias') }));
+        tracked.push(aliasPath);
+      }
+      await writeFile(healthyPath, JSON.stringify({ openai: target('healthy') }));
+      const before = await Promise.all(tracked.map(path => readFile(path)));
+      const requests = [];
+      manager._requestJson = async (url, options) => {
+        assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+        assert.equal(options.headers.Authorization, 'Bearer TEST-access-healthy');
+        assert.deepEqual(JSON.parse(options.body), {
+          model: 'gpt-5.6-luna', instructions: 'Reply with exactly OK.',
+          input: [{ role: 'user', content: [{ type: 'input_text', text: 'Reply with exactly OK.' }] }],
+          stream: true, store: false,
+        });
+        requests.push(url);
+        return completed();
+      };
+      const batch = await manager.runOpenAIKickoffBatch();
+      assert.equal(requests.length, 1);
+      assert.equal(batch.results.length, 2);
+      const failed = batch.results.find(result => result.stage === 'auth');
+      assert.equal(failed.error, t('sync_recovery_error'));
+      assert.equal(failed.inference_attempted, false);
+      assert.equal(failed.inference_completed, false);
+      assert.equal(failed.output_text, null);
+      assert.equal(failed.presets.length, fault === 'aliases' ? 3 : hasPeer ? 2 : 1);
+      assert.equal(batch.results.find(result => result.inference_completed).output_text, 'OK');
+      assert.doesNotMatch(JSON.stringify(batch), /TEST-SECRET|TEST-access|TEST-refresh|id_token/);
+      assert.deepEqual(await Promise.all(tracked.map(path => readFile(path))), before);
+      for (const language of ['en', 'ko']) {
+        setLanguage(language);
+        const output = await captureKickoff({ runOpenAIKickoffBatch: async () => batch });
+        assert.ok(output.includes(`${t('openai_kickoff_attempted')}: 1`));
+        assert.ok(output.includes(`${t('openai_kickoff_completed')}: 1`));
+        assert.ok(output.includes(t('openai_kickoff_stage_auth')));
+        assert.doesNotMatch(output, /TEST-SECRET|TEST-access|TEST-refresh/);
+      }
+    });
+  }
+}
+
+for (const reversed of [false, true]) {
+  test(`healthy recovered lineage absorbs access-only peers without resurrecting old access, reversed=${reversed}`, async context => {
+    const { manager } = await setup(context);
+    const source = target('source');
+    const peer = { ...source };
+    delete peer.refresh;
+    delete peer.opm_identity;
+    await manager._writeJsonAtomic(manager._recoveryPath(source.refresh), {
+      status: 'received', source_refresh: source.refresh, source_accesses: [source.access],
+      source_identity: source.opm_identity, received_at: new Date().toISOString(),
+      response: { access_token: 'TEST-access-recovered', refresh_token: 'TEST-refresh-recovered', expires_in: 3600 },
+    });
+    await writeFile(join(manager.presetsDir, `${reversed ? 'z' : 'a'}-source.json`), JSON.stringify({ openai: source }));
+    await writeFile(join(manager.presetsDir, `${reversed ? 'a' : 'z'}-peer.json`), JSON.stringify({ openai: peer }));
+    let calls = 0;
+    manager._requestJson = async (url, options) => {
+      assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+      assert.equal(options.headers.Authorization, 'Bearer TEST-access-recovered');
+      calls++;
+      return completed();
+    };
+    const batch = await manager.runOpenAIKickoffBatch();
+    assert.equal(calls, 1);
+    assert.equal(batch.results.length, 1);
+    assert.equal(batch.results[0].inference_completed, true);
+    assert.equal(batch.results[0].presets.length, 2);
+    assert.equal(batch.results[0].user_id, 'source');
+  });
+}
+
+test('all malformed sources return auth failures rather than no targets; unsafe listing remains global', async context => {
+  const { manager } = await setup(context);
+  await writeFile(manager.getAuthPath(), '{TEST-SECRET');
+  await writeFile(join(manager.presetsDir, 'bad.json'), '{TEST-SECRET');
+  const batch = await manager.runOpenAIKickoffBatch();
+  assert.equal(batch.results.length, 2);
+  assert.ok(batch.results.every(result => result.stage === 'auth' && !result.inference_attempted && !result.inference_completed));
+  const output = await captureKickoff({ runOpenAIKickoffBatch: async () => batch });
+  assert.ok(!output.includes(t('openai_kickoff_no_targets')));
+  manager.presetsDir = manager.getAuthPath();
+  await assert.rejects(manager.runOpenAIKickoffBatch(), { stage: 'preflight', inference_attempted: false });
 });
 
 test('one inference failure does not suppress another valid target generation in a mixed batch', async context => {
