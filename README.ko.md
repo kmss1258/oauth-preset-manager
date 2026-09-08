@@ -1,6 +1,6 @@
 # 🔐 OAuth Preset Manager
 
-OpenCode OAuth 인증 프리셋을 쉽게 관리하고 전환할 수 있는 도구입니다.
+프리셋 하나로 같은 OpenAI OAuth 계정을 OpenCode, Codex, claude-code-proxy의 Codex 제공자에 함께 적용하는 도구입니다. 다른 제공자의 인증 항목도 프리셋으로 관리합니다.
 
 ---
 
@@ -29,7 +29,8 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 
 일반적인 인증 파일 위치:
 - OpenCode: `~/.local/share/opencode/auth.json` 또는 `~/.config/opencode/auth.json`
-- Codex CLI: `~/.codex/auth.json`
+- Codex CLI: `~/.codex/auth.json` (일반 프리셋 전환 시 함께 적용하며 네이티브 쿼터 조회 원본은 아님)
+- claude-code-proxy의 Codex 제공자 전용: `~/.config/claude-code-proxy/codex/auth.json`
 - Command Code: `~/.commandcode/auth.json` (OPM은 `~/.commandcode/oauth.json`도 확인합니다)
 - Claude Code: `~/.claude/.credentials.json`
 
@@ -41,6 +42,7 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 - 💾 **프리셋 관리**: 여러 인증 상태를 저장하고 정리
 - 📊 **쿼터 조회**: `opm q` / `opm quota`로 Rich 표 형식으로 확인하며, 대화형 화면은 60초마다 자동 갱신되고 표 위에 다음 갱신 카운트다운을 표시
 - 📱 **모바일 터미널**: 좁은 창에서는 계정별 짧은 막대와 잔여율을 표시하고, 100열 이상에서는 전체 표를 표시합니다. 창 크기 변경은 추가 API 호출 없이 즉시 반영합니다.
+- Account 칸의 프리셋 목록은 마지막 사용일(`last_used`, 없으면 생성일 `created_at`) 최신순 최대 2개만 표시합니다. 날짜가 없으면 뒤로 보내며, Command Code 계정 정보는 최대 2줄입니다. 표시만 줄이고 조회 대상이나 계정 행은 유지합니다.
 - 화면 높이가 부족하면 `j`/`k`, 아래/위 화살표, Page Down/Page Up으로 페이지를 이동합니다. 카운트다운은 고정됩니다. `g`는 Google 상세 표시, `q`·Esc·Enter·Ctrl-C는 종료이며 이전 터미널 화면을 복원합니다.
 - Claude OAuth의 5시간·주간·모델별 쿼터도 지원합니다. 아래 인증 조건을 확인하세요.
 - 피크 시간은 고정된 평일(월–금) UTC 01:00–04:00 / KST 10:00–13:00, UTC 06:00–10:00 / KST 15:00–19:00이며 주말은 쉽니다. 시작 1시간 전부터 `HH:MM:SS` 카운트다운을 표시하고, 피크 중에는 TTY 화면의 테두리가 파스텔 무지개색으로 회전합니다. 서머타임은 적용하지 않습니다.
@@ -98,7 +100,7 @@ OAuth Preset Manager는 OpenCode 인증 파일(`~/.local/share/opencode/auth.jso
 2. **전환**: 현재 인증을 저장된 프리셋으로 교체
 3. **백업**: 전환 전 자동 백업
 
-모든 프리셋은 `~/.config/oauth-preset-manager/presets/`에 저장됩니다.
+프리셋은 `~/.config/oauth-preset-manager/presets/`에 저장됩니다. 네이티브 Codex 토큰 묶음은 같은 프리셋에 연결된 사이드카로 보관합니다.
 
 ## 📝 사용 예시
 
@@ -139,6 +141,8 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 
 ### 환경 변수
 - `OPM_LANG`: 언어 설정 (`ko` 또는 `en`)
+- `CODEX_HOME`: Codex 전용 디렉터리 재정의. 앞뒤 공백을 제거하고 비어 있으면 `~/.codex`를 사용합니다. 값이 있으면 해당 경로가 없거나 잘못되어도 기본 경로로 돌아가지 않습니다.
+- `CCP_CONFIG_DIR`: claude-code-proxy 루트 재정의. `<루트>/codex/auth.json`에 씁니다. 없으면 Linux는 `${XDG_CONFIG_HOME:-~/.config}/claude-code-proxy`, macOS는 `~/.config/claude-code-proxy`, Windows는 `%APPDATA%/claude-code-proxy`(APPDATA가 없으면 통상적인 `~/AppData/Roaming` 하위)를 사용합니다. 앞뒤 공백을 제거하며, 명시한 경로에 오류가 있어도 기본 경로로 돌아가지 않습니다.
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Google/Antigravity 할당량 갱신에 필요
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Google/Antigravity 할당량 갱신에 필요
 - `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go quota 조회용 workspace ID (`wrk_...`)
@@ -146,6 +150,39 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 - `OPM_COMMAND_CODE_AUTH_PATH`: Command Code 인증 파일 경로 재정의
 - `CLAUDE_CONFIG_DIR`: Claude Code 프로필 디렉터리 (기본 `~/.claude`)
 - `OPM_CLAUDE_AUTH_PATH`: Claude Code `.credentials.json` 경로 재정의 (`CLAUDE_CONFIG_DIR`보다 우선)
+
+### 한 번에 세 대상 전환
+
+```bash
+opm save work             # OpenCode 저장 및 실제로 일치하는 원본 ID 토큰 묶음 보관
+opm switch work           # 같은 OpenAI OAuth 인증을 두 앱과 프록시에 함께 적용
+opm                       # 메뉴에서 프리셋을 선택해도 같은 통합 전환 실행
+```
+
+별도의 Codex/프록시 프리셋 선택이나 하위 메뉴는 없습니다. OpenAI OAuth(`openai` 또는 `codex` 별칭)가 있으면 OpenCode, 네이티브 Codex, [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy)의 **Codex 제공자만** 함께 전환합니다. 별칭이 충돌하면 거부합니다. OpenAI OAuth가 없으면 Codex와 프록시 인증을 건너뛰었다고 표시하고 기존 파일과 설정을 유지합니다.
+
+- **전환 전에 OpenCode, Codex, claude-code-proxy를 모두 종료하고 완료 후 모두 다시 실행하세요.** 프록시는 요청마다 인증 파일을 읽지만 연결 풀의 웹소켓이나 동시 토큰 갱신이 이전 인증을 유지하거나 파일 쓰기와 충돌할 수 있어 실행 중 자동 반영을 보장하지 않습니다. 전환·쿼터 갱신·로그인을 동시에 실행하지 마세요. CLI 통합 전환 진행 중에는 Escape/Ctrl-C로 작업을 중단하지 않습니다.
+- **동시 적용 시에만 Codex 파일 저장소를 검사합니다.** 실제 TOML 파서인 `@iarna/toml`을 사용하므로 관련 없는 여러 줄 문자열·배열·인라인 테이블은 허용합니다. 추가 의존성은 하위 의존성이 없는 이 파서 하나입니다. 설정이 없으면 기본 파일 저장소를 사용하며, 프로필을 포함한 `cli_auth_credentials_store`는 `"file"`이어야 합니다. keyring·`auto`·잘못된 TOML·활성 암호화 저장소 설정은 갱신/대상 쓰기 전에 거부합니다. 설정은 자동 수정하지 않습니다. 별도 실행 플래그나 관리 설정도 파일 저장소여야 하며 이들은 검사하지 않습니다.
+- **저장과 인식은 오프라인입니다.** 네이티브 ChatGPT 묶음은 OpenCode의 access/refresh 토큰이 모두 정확히 일치하고 확인 가능한 사용자·워크스페이스 정보도 일치할 때만 연결합니다. 비즈니스의 공유 accountId만으로 연결하지 않습니다. 실제 원본 `id_token`/`idToken` 필드도 보관할 수 있습니다. 기존 네이티브 묶음을 재사용할 때는 `last_refresh`와 알 수 없는 메타데이터를 포함한 원본 바이트를 유지합니다.
+- **ID 토큰이 없는 기존 프리셋은 사용자 전환 시 OAuth refresh가 필요합니다.** 기존 OpenAI refresh grant와 공통 client ID를 사용하며, 실제 반환된 JWT 형태의 ID 토큰과 일관된 계정 정보를 확보해야 어느 대상이든 씁니다. 응답에 ID가 없으면 대상 파일을 교체하지 않고 실패하며 JWT를 임의로 만들지 않습니다. 불투명한 access 토큰도 지원합니다. 현재 묶음과 유효한 access 만료값이 있어야 불필요한 갱신을 생략합니다. 만료값이 없거나 잘못되면 access JWT의 숫자 `exp`를 사용하거나 refresh로 확보하며, ID 토큰 만료나 추측한 수명을 대신 쓰지 않습니다. 구조 검사는 서명이나 실제 로그인 검증이 아닙니다.
+- 회전된 access/refresh/만료/계정 정보는 선택한 프리셋과 활성 OpenCode 인증에 보관합니다. 네이티브 ID/access/refresh/account/`last_refresh` 묶음은 `~/.config/oauth-preset-manager/preset-sidecars/codex/<name>.json`에 연결합니다. `opm_identity`는 ID 토큰이 생략된 응답 뒤에도 이미 확인한 사용자/subject/워크스페이스 정보를 유지하는 메타데이터이며, 가짜 토큰이 아닙니다.
+- 프록시에는 정확히 `access`, `refresh`, `expires`(Unix 밀리초 숫자), 정식 키 `accountId`만 있는 **평면 JSON**을 씁니다. 선택 프리셋과 활성 OpenCode에 보관한 최종 값과 동일하며, 네이티브 Codex의 중첩 `tokens` 형식이 아닙니다. 인식할 때는 구형 `account_id`도 허용하되 충돌하는 별칭은 거부합니다. 대상 Codex 인증 파일이 없으면 만들지만 프록시 설치·실행·업로드 API 호출은 하지 않으며 다른 제공자 인증과 프록시 설정은 수정하지 않습니다.
+- 기존 대상은 원자적 교체 전에 `backups/`에 비공개 백업하며 백업 실패 시 전환을 중단합니다. 대상/설정 쓰기 실패 시 OpenCode·Codex·프록시 Codex 인증·선택 프리셋·연결 묶음·해당 Go 세션·OPM 설정 **모두** 복원을 시도합니다. 먼저 두 앱을 쓴 뒤 세 번째 프록시 대상에서 실패하는 경우도 포함합니다. 관리 파일/디렉터리는 `0600`/`0700`이며 심볼릭 링크·일반 파일이 아닌 경로·안전하지 않은 이름·서로 겹치는 인증 루트 및 OPM 내부 대상 경로를 거부합니다.
+- 연결된 프리셋의 인식은 마지막 선택과 무관하게 세 대상을 확인하며, Go 환경 변수 override도 Codex/프록시 확인을 생략하지 않습니다. 이 과정에서 갱신하지 않습니다. 삭제하면 연결된 네이티브 묶음도 제거하며, 인증 배포로 토큰이 달라지면 오래된 연결을 무효화합니다.
+
+프록시 경로/형식 참고: [`src/paths.rs`](https://github.com/raine/claude-code-proxy/blob/55bf0b5818b461e1860964809726f99d2fd52c10/src/paths.rs), [`src/providers/codex/auth/token_store.rs`](https://github.com/raine/claude-code-proxy/blob/55bf0b5818b461e1860964809726f99d2fd52c10/src/providers/codex/auth/token_store.rs).
+
+#### 토큰 회전 복구
+
+OAuth 토큰 회전은 **서버에서 롤백할 수 없습니다**. 갱신 요청 전에 비공개 `refresh-recovery/<SHA256(refresh)>.json` 기록을 만들고, 실제 반환된 인증을 **대상 파일보다 먼저** 저장합니다. 사용할 수 있는 ID 토큰이 없는 응답도 기록하며 이 복구 기록은 로컬 롤백으로 지우지 않습니다.
+
+- 이후 전환은 성공적으로 기록된 회전을 따라가므로 같은 이전 refresh 토큰을 가진 복제 프리셋도 오래된 토큰을 되살리지 않습니다. ID가 빠진 응답은 다음 명시적인 전환에서 반환된 최신 refresh 인증으로 실제 ID를 다시 요청해야 합니다.
+- 같은 refresh 토큰을 공유하더라도 기록에 없는 access 토큰을 **최신 또는 과거라고 추정하지 않습니다**. 인식·kickoff·쿼터 복구는 이를 거부하며, 명시적인 프리셋 전환은 과거 사이드카가 일치해도 refresh로 재검증합니다. 새 로그인이라는 이유로 영구 차단하지는 않지만 유효하고 사용자 정보가 일관된 갱신 응답을 확보해야 적용합니다.
+- 통신 실패는 서버에서 회전했을 가능성이 있어 pending 기록을 남깁니다. 이를 보관하고 다시 로그인한 새 인증을 저장하세요. 불완전하거나 충돌하는 복구 기록은 추측하지 않고 거부합니다.
+- 응답 기록을 쓸 수 없으면 별도 `backups/rotated_openai_recovery_*.json` 저장을 시도하고 토큰을 출력하지 않은 채 복구 주의사항을 안내합니다. 부분 롤백 실패를 처리할 때는 두 앱과 프록시를 종료하고 `refresh-recovery/` 및 `backups/`를 보존하세요. 기록을 무작정 지우거나 이전 refresh 토큰을 다시 적용하지 마세요.
+- 복구 기록/백업에도 인증이 들어 있으며, 같은 토큰 계보를 다른 프리셋이 사용할 수 있어 프리셋 삭제 뒤에도 의도적으로 유지합니다. 신뢰할 수 있는 비공유 상위 경로에 보관하세요. 포착한 오류에 대한 롤백은 여러 파일 전체의 크래시 안전 트랜잭션이 아니며 강제 종료·정전 복구를 보장하지 않습니다.
+
+**쿼터 범위:** 네이티브 Codex와 프록시 인증은 추가 쿼터 조회 원본이 아니며 쿼터 수집이 이를 덮어쓰지도 않습니다. 기존 OpenCode OAuth 갱신은 반환된 ID를 보관하거나 오래된 연결을 무효화하고 복구 기록으로 다음 전환을 보호합니다. OpenCode 최상위 `codex` 키는 여전히 OpenAI OAuth 별칭입니다.
 
 ### Claude OAuth 쿼터
 
