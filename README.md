@@ -94,6 +94,25 @@ opm q
 > The interactive quota screen refreshes automatically every 60 seconds and shows the next refresh above the table. Press `r` or `ㄱ` to refresh immediately.
 > Peak periods are fixed Monday-Friday schedules: 01:00–04:00 UTC / 10:00–13:00 KST and 06:00–10:00 UTC / 15:00–19:00 KST. Weekends are off. The peak countdown starts one hour before each period and uses `HH:MM:SS`; the pastel border is only shown during active peaks in TTY mode.
 
+### Herdr: live quota under Spaces
+
+Inside Herdr, run **`opm q` from anywhere, including `~`**. The normal quota screen stays open; the calling Space also shows two compact rows (example values):
+
+```text
+Spaces
+  ● Home
+    CX ▰▰▰▱ 75% 2h14m
+    CC ▰▰▱▱ 38% 47m
+```
+
+- **CX is green; CC is orange.** These are the active **native Codex and Claude Code file-backed accounts**, not a total of saved presets. The percentage is remaining quota; the time is until reset. Codex prefers a 5-hour window, falls back to its actual primary window, and labels weekly-only quotas `7d` (unknown windows: `quota`).
+- No Herdr rebuild, extra pane, workspace rename, or daemon. Herdr 0.8.2's workspace metadata and styled Space rows are used. Only the expanded desktop sidebar shows custom rows; collapsed/mobile layouts do not.
+- Quotas are fetched every 60 seconds; reset text and metadata lifetime update every 15 seconds. `r` / `ㄱ` also refreshes the sidebar, without bypassing HTTP 429 cooldown. Claude probes first and falls back to its last successful snapshot on failure: **`CC*` means cached**, not live. Without a usable snapshot, `login`, `expired`, `auth`, `429`, or `error` replaces unavailable percentages. The sidebar collector only performs usage GETs: it never refreshes tokens, rewrites auth, or sends inference requests.
+- Quit `opm q` to clear its two rows. Forced termination expires the last report within 45 seconds. With multiple `opm q` processes in one Space, one reports and a waiting process takes over within 15 seconds when it exits. Other Spaces are independent; a pane moved to a different Space is followed on the next update.
+- First use backs up the original Herdr config beside it (`config.toml.opm-backup-*`), preserves existing keys/theme/Space rows and comments, validates the added rows, and reloads Herdr. `HERDR_CONFIG_PATH` is respected. Unsupported/invalid config is not overwritten; a sidebar warning does not stop the regular quota screen. Outside Herdr or when output is piped, nothing is installed or reported.
+
+References: [Herdr 0.8.2 sidebar configuration](https://herdr.dev/docs/0.8.2/configuration/), [workspace metadata](https://herdr.dev/docs/cli-reference/).
+
 **Save Current Auth:**
 ```bash
 opm save <new_preset_name>
@@ -107,7 +126,7 @@ OpenCode uses XDG-style paths on both Linux and macOS, and honors `XDG_DATA_HOME
 
 Common auth file locations:
 - OpenCode: `~/.local/share/opencode/auth.json` or `~/.config/opencode/auth.json`
-- Codex CLI: `~/.codex/auth.json` (updated by normal preset switching; not a native quota source)
+- Codex CLI: `~/.codex/auth.json` (updated by normal preset switching; read-only native source for the Herdr sidebar)
 - claude-code-proxy, Codex provider only: `~/.config/claude-code-proxy/codex/auth.json`
 - Command Code: `~/.commandcode/auth.json` (OPM also checks `~/.commandcode/oauth.json`)
 - Claude Code: `~/.claude/.credentials.json`
@@ -155,7 +174,7 @@ OAuth token rotation **cannot be rolled back remotely**. Before requesting refre
 - If the response journal cannot be written, OPM attempts an independent `backups/rotated_openai_recovery_*.json` copy and reports the recovery caveat without printing tokens. Keep both clients and the proxy closed while resolving a partial rollback; preserve `refresh-recovery/` and `backups/` for manual recovery. Do not blindly delete recovery records or reapply an old refresh token.
 - Recovery records/backups contain credentials and are intentionally retained, including after deleting a preset because another preset may share the refresh lineage. Protect them. Trusted, non-shared storage ancestors are required. Caught-error rollback is not a crash-safe multi-file transaction and cannot guarantee recovery after process termination or power loss.
 
-**Quota scope:** Native Codex and proxy auth are not additional quota sources and are not rewritten by quota collection. Existing OpenCode OAuth refreshes retain returned ID data or invalidate the stale linked bundle, with recovery records protecting later switches. The top-level OpenCode `codex` key remains an OpenAI OAuth alias.
+**Quota scope:** Native Codex and proxy auth are not extra rows in the regular quota table and are not rewritten by quota collection. The Herdr sidebar separately reads native Codex auth for its CX row. Existing OpenCode OAuth refreshes retain returned ID data or invalidate the stale linked bundle, with recovery records protecting later switches. The top-level OpenCode `codex` key remains an OpenAI OAuth alias.
 
 ### Claude OAuth quota
 
@@ -164,7 +183,8 @@ OAuth token rotation **cannot be rolled back remotely**. Before requesting refre
 - Shows **remaining** 5-hour and weekly quota, plus model-specific weekly/extra-usage percentages when returned. The Claude table row labels its first window `5h` (not a calendar day).
 - Reads the internal `https://api.anthropic.com/api/oauth/usage` endpoint with `anthropic-beta: oauth-2025-04-20`. Supports both legacy windows and newer `limits[]` responses. This is not a public stable Anthropic API.
 - Requires usage/profile permission (`user:profile`); inference-only tokens may not work. Expired/unauthorized credentials show a re-login message. OPM **never refreshes, copies, or rewrites Claude credentials** as part of quota collection.
-- Successful reads are cached in memory for 60 seconds. HTTP 429 honors `Retry-After` (five-minute fallback); manual refresh cannot bypass that cooldown. Credentials are re-read each collection, so a login/token rotation is picked up automatically.
+- **Query first, cache on failure:** each refresh attempts a live read. If it fails, the last successful snapshot (up to 24 hours old) remains visible with a cache-age/failure note; the Herdr sidebar uses `CC*`. Never-successful or older snapshots do not invent quota values. Reset timestamps stay absolute; cached percentages are not reset to 100% when time passes.
+- Normalized percentages/reset times and HTTP 429 cooldown are stored privately in `~/.config/oauth-preset-manager/claude-quota-cache/`, keyed by a SHA-256 hash of the exact access token. No token or raw error body is saved. This lets cache fallback and `Retry-After` survive restarting `opm q`; without `Retry-After`, 429 waits five minutes. Manual refresh cannot bypass that cooldown. Different tokens never borrow one another's values, and missing/invalid local credentials still require login. Overlapping table/sidebar requests in one process are coalesced. Cache I/O failures do not block live queries.
 - macOS Keychain-only credentials are **not read automatically**. Use an existing file-backed Claude profile or an OpenCode Anthropic OAuth entry. Keep credential files private (`chmod 600`); symlinked local Claude credential files are ignored.
 
 References: [CodexBar OAuth fetcher/schema](https://github.com/steipete/CodexBar/blob/170a4d41c6d69e2bb25daac4fb088a92de2f9bc4/Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift), [Headroom client](https://github.com/headroomlabs-ai/headroom/blob/e67b3c8a29443a60d6b0018fb22f525c5cd7e709/headroom/subscription/client.py), [Claude Code authentication](https://code.claude.com/docs/en/authentication).

@@ -98,7 +98,7 @@ test('Claude queries OAuth only, deduplicates sources, caches and never rewrites
   assert.equal(result.presets.length, 3);
   assert.ok(!JSON.stringify(result).includes('synthetic'));
   await manager.collectClaudeCodeQuota();
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   assert.deepEqual(await readFile(path), original);
 });
 
@@ -143,21 +143,41 @@ test('Claude failures redact responses and respect Retry-After cooldown', async 
   assert.equal(calls, 1);
   for (const status of [401, 403, 500]) {
     manager._claudeQuotaCache.clear();
+    await rm(join(manager.configDir, 'claude-quota-cache'), { recursive: true, force: true });
     manager._requestJson = async () => { throw Object.assign(new Error('synthetic-access'), { statusCode: status }); };
     const [failure] = await manager.collectClaudeCodeQuota();
     assert.ok(failure.error);
     assert.ok(!failure.error.includes('synthetic'));
-    assert.equal(manager._claudeQuotaCache.size, 0);
+    assert.equal([...manager._claudeQuotaCache.values()][0].usage, null);
     manager._requestJson = async () => usage;
     assert.equal((await manager.collectClaudeCodeQuota())[0].error, null);
   }
   for (const retryAfter of [new Date(Date.now() + 600_000).toUTCString(), undefined]) {
     manager._claudeQuotaCache.clear();
+    await rm(join(manager.configDir, 'claude-quota-cache'), { recursive: true, force: true });
     manager._requestJson = async () => { throw Object.assign(new Error('synthetic-access'), { statusCode: 429, retryAfter }); };
     await manager.collectClaudeCodeQuota();
     const until = [...manager._claudeQuotaCache.values()][0].until;
     assert.ok(until > Date.now() + (retryAfter ? 598_000 : 299_000));
   }
+});
+
+test('Claude keeps cached percentages visible after failed probes, including across manager restarts', async t => {
+  const { manager, save } = await fixture(t);
+  await save();
+  manager._requestJson = async () => usage;
+  await manager.collectClaudeCodeQuota();
+  manager._requestJson = async () => { throw Object.assign(new Error('private failure'), { statusCode: 429 }); };
+  const [cached] = await manager.collectClaudeCodeQuota();
+  assert.equal(cached.error, null);
+  assert.equal(cached.cached, true);
+  assert.equal(cached.daily.percent_remaining, 88);
+  assert.ok(cached.cached_at && cached.cache_error);
+  const restarted = new PresetManager(manager.configDir);
+  await restarted.init();
+  restarted.config.auth_path = manager.getAuthPath();
+  restarted._requestJson = async () => assert.fail('must honor saved 429 cooldown');
+  assert.deepEqual((await restarted.collectClaudeCodeQuota())[0], cached);
 });
 
 test('distinct Claude OAuth targets remain independent when one request fails', async t => {

@@ -29,7 +29,7 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 
 일반적인 인증 파일 위치:
 - OpenCode: `~/.local/share/opencode/auth.json` 또는 `~/.config/opencode/auth.json`
-- Codex CLI: `~/.codex/auth.json` (일반 프리셋 전환 시 함께 적용하며 네이티브 쿼터 조회 원본은 아님)
+- Codex CLI: `~/.codex/auth.json` (일반 프리셋 전환 시 함께 적용하며 Herdr 사이드바에서 읽기 전용으로 조회)
 - claude-code-proxy의 Codex 제공자 전용: `~/.config/claude-code-proxy/codex/auth.json`
 - Command Code: `~/.commandcode/auth.json` (OPM은 `~/.commandcode/oauth.json`도 확인합니다)
 - Claude Code: `~/.claude/.credentials.json`
@@ -91,6 +91,25 @@ opm q
 > 피크 카운트다운은 다음 quota 자동 갱신 카운트와 같은 줄에 표시됩니다. `r` 또는 `ㄱ`은 기존처럼 즉시 갱신하고, 비대화형 출력에서는 ANSI 애니메이션을 사용하지 않습니다.
 > 넓은 창은 표, 모바일·좁은 창은 작은 프로그레스바로 보여줍니다. 높이가 극도로 작으면 상태/종료 표시만 남기고, 창을 키우면 복원됩니다. 파이프 출력은 커서 제어·페이지 나눔 없이 한 번만 출력합니다.
 > 대화형 쿼터 화면은 60초마다 자동 갱신됩니다. 표 바로 위의 다음 갱신 카운트다운을 확인하거나 `r` 또는 `ㄱ`으로 즉시 갱신할 수 있습니다.
+
+### Herdr: 왼쪽 Spaces 실시간 쿼터
+
+Herdr 안에서 **홈(`~`)이든 어디서든 평소처럼 `opm q`**를 실행하세요. 기존 쿼터 화면은 유지하고, 명령을 실행한 Space 아래에도 두 줄을 표시합니다. 아래 숫자는 예시입니다.
+
+```text
+Spaces
+  ● Home
+    CX ▰▰▰▱ 75% 2h14m
+    CC ▰▰▱▱ 38% 47m
+```
+
+- **CX는 초록, CC는 주황**입니다. 저장된 프리셋 전체가 아니라 **활성 네이티브 Codex·Claude Code의 파일 기반 계정**입니다. %는 남은 쿼터, 시간은 리셋까지 남은 시간입니다. Codex는 5시간 구간을 우선 사용하고 없으면 실제 primary 구간을 사용합니다. 주간 전용은 `7d`, 불명확한 구간은 `quota`로 구분합니다.
+- Herdr 본체 수정·추가 pane·Space 이름 변경·별도 데몬이 없습니다. Herdr 0.8.2의 workspace metadata와 컬러 Space 행을 사용합니다. **펼친 데스크톱 사이드바**에서만 표시되며 접힌 상태/모바일 레이아웃에서는 보이지 않습니다.
+- 쿼터는 60초마다 조회하고 남은 시간·표시 유효기간은 15초마다 갱신합니다. `r`/`ㄱ` 수동 갱신도 연결되며 429 대기 시간을 우회하지 않습니다. Claude는 먼저 조회하고 실패하면 마지막 성공값을 표시합니다. **`CC*`는 실시간 값이 아닌 캐시**라는 뜻입니다. 사용 가능한 캐시가 없으면 `login`, `expired`, `auth`, `429`, `error`를 표시합니다. 사이드바 수집기는 사용량 GET만 실행하며 인증 갱신·인증 파일 덮어쓰기·추론을 하지 않습니다.
+- `opm q`를 종료하면 두 줄을 지우고, 강제 종료되면 마지막 표시가 45초 이내 만료됩니다. 같은 Space에서 여러 개를 실행하면 하나만 보고하며 해당 프로세스 종료 후 대기 중인 다른 실행이 15초 이내 이어받습니다. 다른 Space는 독립적으로 표시하고, pane을 옮기면 다음 갱신 때 새 Space를 따라갑니다.
+- 첫 실행 시 Herdr 설정을 옆에 백업(`config.toml.opm-backup-*`)하고 기존 키·테마·Space 행·주석을 보존한 채 두 행만 등록합니다. 설정 검사 후 reload하며 `HERDR_CONFIG_PATH`를 따릅니다. 지원하지 않는 구문/잘못된 설정은 덮어쓰지 않고 연동 경고만 표시하며 기존 쿼터 화면은 유지합니다. Herdr 밖이나 파이프 출력에서는 설정/표시 작업을 하지 않습니다.
+
+참고: [Herdr 0.8.2 사이드바 설정](https://herdr.dev/docs/0.8.2/configuration/), [workspace metadata 명령](https://herdr.dev/docs/cli-reference/).
 
 ## 🔧 작동 원리
 
@@ -182,7 +201,7 @@ OAuth 토큰 회전은 **서버에서 롤백할 수 없습니다**. 갱신 요�
 - 응답 기록을 쓸 수 없으면 별도 `backups/rotated_openai_recovery_*.json` 저장을 시도하고 토큰을 출력하지 않은 채 복구 주의사항을 안내합니다. 부분 롤백 실패를 처리할 때는 두 앱과 프록시를 종료하고 `refresh-recovery/` 및 `backups/`를 보존하세요. 기록을 무작정 지우거나 이전 refresh 토큰을 다시 적용하지 마세요.
 - 복구 기록/백업에도 인증이 들어 있으며, 같은 토큰 계보를 다른 프리셋이 사용할 수 있어 프리셋 삭제 뒤에도 의도적으로 유지합니다. 신뢰할 수 있는 비공유 상위 경로에 보관하세요. 포착한 오류에 대한 롤백은 여러 파일 전체의 크래시 안전 트랜잭션이 아니며 강제 종료·정전 복구를 보장하지 않습니다.
 
-**쿼터 범위:** 네이티브 Codex와 프록시 인증은 추가 쿼터 조회 원본이 아니며 쿼터 수집이 이를 덮어쓰지도 않습니다. 기존 OpenCode OAuth 갱신은 반환된 ID를 보관하거나 오래된 연결을 무효화하고 복구 기록으로 다음 전환을 보호합니다. OpenCode 최상위 `codex` 키는 여전히 OpenAI OAuth 별칭입니다.
+**쿼터 범위:** 네이티브 Codex와 프록시 인증은 일반 쿼터 표의 추가 행이 아니며 쿼터 수집이 이를 덮어쓰지도 않습니다. Herdr 사이드바의 CX 행은 네이티브 Codex 인증을 별도로 읽습니다. 기존 OpenCode OAuth 갱신은 반환된 ID를 보관하거나 오래된 연결을 무효화하고 복구 기록으로 다음 전환을 보호합니다. OpenCode 최상위 `codex` 키는 여전히 OpenAI OAuth 별칭입니다.
 
 ### Claude OAuth 쿼터
 
@@ -191,7 +210,8 @@ OAuth 토큰 회전은 **서버에서 롤백할 수 없습니다**. 갱신 요�
 - **잔여율** 기준으로 5시간·주간 쿼터와, 응답에 있을 경우 모델별 주간·추가 사용량 비율을 표시합니다. Claude 행의 첫 구간은 하루가 아닌 `5h`입니다.
 - 내부 API `https://api.anthropic.com/api/oauth/usage`와 `anthropic-beta: oauth-2025-04-20` 헤더를 사용합니다. 기존 응답과 최신 `limits[]` 형식을 모두 지원하지만, 공개 안정 API가 아니므로 변경될 수 있습니다.
 - 사용량 조회에는 `user:profile` 권한이 필요합니다. 추론 전용 토큰은 실패할 수 있습니다. 만료·권한 오류는 재로그인 안내로 표시하며, 쿼터 수집 과정에서 **Claude 인증을 갱신·복사·덮어쓰지 않습니다**.
-- 성공 응답은 메모리에 60초간 보관합니다. 429 응답의 `Retry-After`를 준수하고, 없으면 5분 대기합니다. 수동 갱신도 이 제한을 우회하지 않습니다. 인증 파일은 매번 다시 읽으므로 재로그인 후 변경된 토큰을 자동으로 감지합니다.
+- **조회 우선, 실패 시 캐시:** 새로고침마다 실제 조회를 시도하고, 실패하면 24시간 이내의 마지막 성공값을 캐시 시각·실패 사유와 함께 표시합니다. Herdr에서는 `CC*`로 구분합니다. 성공 이력이 없거나 너무 오래된 캐시로 값을 만들지 않으며, 리셋 시각이 지났다고 캐시 잔여율을 100%로 바꾸지 않습니다.
+- 정규화된 잔여율·리셋 시각과 429 대기 시간을 `~/.config/oauth-preset-manager/claude-quota-cache/`에 비공개로 저장합니다. 정확히 같은 access token의 SHA-256 해시로 구분하며 토큰·원문 오류는 저장하지 않습니다. `opm q` 재실행 후에도 마지막 성공값과 `Retry-After`를 재사용하고, 429 헤더가 없으면 5분 대기합니다. 수동 갱신도 이 제한을 우회하지 않습니다. 다른 토큰의 캐시를 가져오지 않으며 로컬 인증 누락/오류는 여전히 로그인이 필요합니다. 같은 프로세스에서 표·사이드바 조회가 겹치면 한 요청을 공유하며, 캐시 파일 오류가 실제 조회를 막지는 않습니다.
 - macOS **Keychain 전용 인증은 자동으로 읽지 않습니다**. 기존 파일 기반 Claude 프로필이나 OpenCode의 Anthropic OAuth 항목을 사용하세요. 인증 파일은 `chmod 600`으로 보호하고, 로컬 Claude 인증 파일의 심볼릭 링크는 무시합니다.
 
 참고 구현: [CodexBar](https://github.com/steipete/CodexBar/blob/170a4d41c6d69e2bb25daac4fb088a92de2f9bc4/Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift), [Headroom](https://github.com/headroomlabs-ai/headroom/blob/e67b3c8a29443a60d6b0018fb22f525c5cd7e709/headroom/subscription/client.py), [Claude Code 인증 문서](https://code.claude.com/docs/en/authentication).

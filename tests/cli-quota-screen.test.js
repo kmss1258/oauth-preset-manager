@@ -270,6 +270,23 @@ test('Command Code errors fit two physical lines without mutating errors or limi
   }
 });
 
+test('cached Claude usage retains bars with an explicit cache age and failure note', () => {
+  const cached = { provider: 'claude', account_id: 'cached-account', daily: quota, weekly: quota,
+    cached: true, cached_at: new Date(Date.now() - 120000).toISOString(), cache_error: 'Rate limited', error: null };
+  try {
+    for (const language of ['ko', 'en']) {
+      setLanguage(language);
+      for (const columns of [39, 99, 120, 180]) {
+        const lines = buildQuotaFrame([cached], { columns }).lines.map(stripAnsi);
+        assert.match(lines.join('\n'), /75%/);
+        assert.match(lines.join('\n'), /캐시|cache/);
+        assert.match(lines.join('\n'), /Rate limited/);
+        assert.ok(lines.every(line => stringWidth(line) <= columns - 1));
+      }
+    }
+  } finally { setLanguage('en'); }
+});
+
 test('paging exposes all body lines without scrolling and clamps after resize', () => {
   const options = { columns: 39, rows: 10, interactive: true, showGoogle: true };
   const first = buildQuotaFrame(results, options);
@@ -396,7 +413,7 @@ test('isolated tmux preserves physical rows through ticks, emoji overflow, resiz
     });
   `);
   tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'quota', '-x', '120', '-y', '24',
-    `exec env HOME='${home}' OPM_LANG=en '${process.execPath}' '${fixture}'`);
+    `exec env HOME='${home}' HERDR_ENV=0 OPM_LANG=en '${process.execPath}' '${fixture}'`);
   const capture = () => tmux('capture-pane', '-p', '-t', 'quota').split(/\r?\n/).map(line => line.trimEnd());
   const waitFor = async predicate => {
     for (let i = 0; i < 150; i++) {
@@ -482,10 +499,16 @@ test('interactive loop handles ticks, resizing, paging, Google toggle, refresh a
     assert.fail('quota loop did not reach expected state');
   };
   let running;
+  const sidebarCalls = [];
+  const options = { startHerdrQuota: ({ interactive }) => {
+    assert.equal(interactive, true);
+    sidebarCalls.push('start');
+    return { refresh: force => sidebarCalls.push(force), stop: async () => { sidebarCalls.push('stop'); } };
+  } };
   try {
     Object.defineProperty(process, 'stdin', { value: stdin, configurable: true });
     Object.defineProperty(process, 'stdout', { value: stdout, configurable: true });
-    running = cmdQuota(manager);
+    running = cmdQuota(manager, options);
     await waitFor(() => writes.some(text => text.startsWith('\x1b[2;1H')));
     assert.ok(writes.filter(text => text.startsWith('\x1b[2;1H')).every(text => !text.includes('\n')));
     for (const [columns, rows] of [[32, 10], [8, 3], [79, 24], [120, 40]]) {
@@ -514,8 +537,10 @@ test('interactive loop handles ticks, resizing, paging, Google toggle, refresh a
     assert.equal(stdout.listenerCount('resize'), 0);
     assert.equal(stdin.isRaw, false);
     assert.equal(stdin.paused, true);
-    const failed = cmdQuota({ collectAllQuota: async () => { throw new Error('synthetic failure'); } });
+    assert.deepEqual(sidebarCalls, ['start', true, true, 'stop']);
+    const failed = cmdQuota({ collectAllQuota: async () => { throw new Error('synthetic failure'); } }, options);
     await assert.rejects(failed, /synthetic failure/);
+    assert.deepEqual(sidebarCalls.slice(-2), ['start', 'stop']);
     assert.equal(writes.at(-1), '\x1b[?25h\x1b[?1049l');
     assert.equal(stdin.listenerCount('data'), 0);
     assert.equal(stdout.listenerCount('resize'), 0);

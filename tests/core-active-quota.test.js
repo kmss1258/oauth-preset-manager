@@ -9,7 +9,9 @@ import { ActiveQuotaCollector } from '../src/active-quota.js';
 
 const codexUsage = { rate_limit: { primary_window: { used_percent: 23, limit_window_seconds: 18000 } } };
 const claudeUsage = { five_hour: { utilization: 41 } };
-const row = (provider, status, percent = null) => ({ provider, percent, status });
+const row = (provider, status, percent = null, window = '5h', resetAt = null) => ({
+  provider, percent, status, ...(status === 'ok' ? { window, resetAt } : {}),
+});
 
 async function fixture(t) {
   const homeDir = await mkdtemp(join(tmpdir(), 'opm-active-'));
@@ -58,7 +60,7 @@ test('fixed native-only results, read-only files, parallel GETs, cache and rotat
   assert.deepEqual(first, expected);
   first[0].percent = 0;
   assert.deepEqual(await f.collector.collect(), expected);
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 3);
   for (const { options, timeout } of f.calls) {
     assert.equal(options.method, 'GET'); assert.equal(timeout, 10000);
     assert.ok(options.signal instanceof AbortSignal); assert.equal(options.body, undefined);
@@ -66,11 +68,11 @@ test('fixed native-only results, read-only files, parallel GETs, cache and rotat
   assert.equal(f.calls.find(call => call.url.includes('chatgpt')).options.headers['ChatGPT-Account-Id'], 'synthetic-account');
   assert.deepEqual(await Promise.all(Object.values(f.paths).map(path => readFile(path))), before);
   await f.save('codex', { account_id: 'rotated-account' });
-  await f.collector.collect(); assert.equal(f.calls.length, 3);
-  f.advance(60000); await f.collector.collect(); assert.equal(f.calls.length, 5);
+  await f.collector.collect(); assert.equal(f.calls.length, 5);
+  f.advance(60000); await f.collector.collect(); assert.equal(f.calls.length, 7);
   await rm(f.paths.codex);
   assert.deepEqual((await f.collector.collect())[0], row('codex', 'missing'));
-  assert.deepEqual(await readdir(join(f.homeDir, '.config', 'oauth-preset-manager')), ['presets']);
+  assert.deepEqual((await readdir(join(f.homeDir, '.config', 'oauth-preset-manager'))).sort(), ['claude-quota-cache', 'presets']);
 });
 
 test('unsafe, malformed and oversized credential files fail closed for both providers', async t => {
@@ -149,7 +151,9 @@ test('failure results are redacted, invalidate old percentages and isolate provi
   for (const statusCode of [401, 403, 500, undefined]) {
     await f.save('codex', { access_token: `rotated-${statusCode}` });
     f.collector._requestJson = async () => { throw Object.assign(new Error('secret provider response'), { statusCode }); };
-    assert.deepEqual(await f.collector.collect(), [row('codex', statusCode === 401 || statusCode === 403 ? 'unauthorized' : 'error'), row('claude', 'ok', 59)]);
+    assert.deepEqual(await f.collector.collect(), [row('codex', statusCode === 401 || statusCode === 403 ? 'unauthorized' : 'error'),
+      { ...row('claude', 'ok', 59), status: 'cached', cachedAt: f.now(),
+        cacheError: statusCode === 401 ? 'expired' : statusCode === 403 ? 'unauthorized' : 'error' }]);
   }
 });
 
@@ -157,9 +161,9 @@ test('window selection, malformed usage and finite bounds never infer a full quo
   const f = await fixture(t);
   await f.save('codex'); await f.save('claude');
   const cases = [
-    [{ primary_window: { used_percent: 9 } }, 91],
-    [{ primary_window: { used_percent: 9, limit_window_seconds: 604800 }, secondary_window: { used_percent: 30, limit_window_seconds: 18000 } }, 70],
-    [{ primary_window: { used_percent: 9, limit_window_seconds: 604800 } }, null],
+    [{ primary_window: { used_percent: 9 } }, 91, 'quota'],
+    [{ primary_window: { used_percent: 9, limit_window_seconds: 604800 }, secondary_window: { used_percent: 30, limit_window_seconds: 18000 } }, 70, '5h'],
+    [{ primary_window: { used_percent: 9, limit_window_seconds: 604800 } }, 91, '7d'],
     [{ primary_window: {} }, null],
     [{ primary_window: { used_percent: null } }, null],
     [{ primary_window: { used_percent: '10' } }, null],
@@ -167,13 +171,64 @@ test('window selection, malformed usage and finite bounds never infer a full quo
     [{ primary_window: { used_percent: -20 } }, 100],
     [{ primary_window: { used_percent: 150 } }, 0],
   ];
-  for (const [rate_limit, percent] of cases) {
+  for (const [rate_limit, percent, window = 'quota'] of cases) {
     f.advance(60000);
     f.collector._requestJson = async url => url.includes('chatgpt') ? { rate_limit } : { seven_day: { utilization: 50 } };
-    assert.deepEqual(await f.collector.collect(), [row('codex', percent === null ? 'error' : 'ok', percent), row('claude', 'error')]);
+    assert.deepEqual(await f.collector.collect(), [row('codex', percent === null ? 'error' : 'ok', percent, window), row('claude', 'error')]);
   }
   f.collector._requestJson = async url => url.includes('chatgpt') ? {} : { limits: [{ kind: 'session', percent: 25 }] };
-  assert.deepEqual(await f.collector.collect(), [row('codex', 'ok', 0), row('claude', 'ok', 75)]);
+  assert.deepEqual(await f.collector.collect(), [row('codex', 'ok', 0, 'quota'), row('claude', 'ok', 75)]);
+});
+
+test('reset metadata is finite, cached without drifting, and uses the selected window', async t => {
+  const f = await fixture(t);
+  await f.save('codex'); await f.save('claude');
+  const future = f.now() + 3_600_000;
+  const cases = [
+    [{ reset_at: future / 1000 }, future],
+    [{ reset_at: future }, future],
+    [{ resets_at: new Date(future).toISOString() }, future],
+    [{ reset_after_seconds: 3600 }, future],
+    [{ reset_at: 'bad', reset_after_seconds: 0 }, f.now()],
+    [{ reset_at: Infinity, reset_after_seconds: -10 }, null],
+    [{ reset_at: 0 }, null],
+    [{ reset_at: 1e30 }, null],
+    [{ reset_after_seconds: '3600' }, null],
+  ];
+  for (const [fields, expected] of cases) {
+    f.collector._requestJson = async url => url.includes('chatgpt')
+      ? { rate_limit: { primary_window: { used_percent: 78, limit_window_seconds: 604800, ...fields } } }
+      : { five_hour: { utilization: 40, resets_at: new Date(future).toISOString() } };
+    assert.deepEqual(await f.collector.collect({ force: true }), [row('codex', 'ok', 22, '7d', expected), row('claude', 'ok', 60, '5h', future)]);
+  }
+  f.collector._requestJson = async () => ({ rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 86400, reset_after_seconds: 3600 } } });
+  await f.collector.collect({ force: true });
+  f.advance(15000);
+  assert.deepEqual((await f.collector.collect())[0], row('codex', 'ok', 99, '24h', future));
+});
+
+test('native Claude uses persisted last success on 429 without borrowing another account', async t => {
+  const f = await fixture(t);
+  await f.save('claude');
+  await f.collector.collect();
+  const collector = new ActiveQuotaCollector({ homeDir: f.homeDir, now: f.now,
+    requestJson: async () => { throw { statusCode: 429, retryAfter: '600' }; } });
+  const expected = { ...row('claude', 'ok', 59), status: 'cached', cachedAt: f.now(), cacheError: 'rate_limited' };
+  assert.deepEqual((await collector.collect())[1], expected);
+  assert.deepEqual((await collector.collect({ force: true }))[1], expected);
+  await f.save('claude', { accessToken: 'another-account' });
+  assert.deepEqual((await collector.collect())[1], row('claude', 'rate_limited'));
+});
+
+test('manual refresh bypasses successful cache but never 429 cooldown', async t => {
+  const f = await fixture(t);
+  await f.save('codex'); await f.save('claude');
+  await f.collector.collect(); await f.collector.collect({ force: true });
+  assert.equal(f.calls.length, 4);
+  let calls = 0;
+  f.collector._requestJson = async () => { calls++; throw { statusCode: 429 }; };
+  await f.collector.collect({ force: true }); await f.collector.collect({ force: true });
+  assert.equal(calls, 2);
 });
 
 test('default transport records 429 headers before a stalled or aborted body, without network', async t => {

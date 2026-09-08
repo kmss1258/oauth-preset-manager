@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { safePath, tokenClaims } from './codex.js';
 import { getClaudeCodeCredentialsPath, parseClaudeUsage } from './core.js';
+import { queryClaudeQuota } from './claude-quota-cache.js';
 
 const MAX_BYTES = 1024 * 1024;
 const text = value => typeof value === 'string' && value.length > 0
@@ -63,11 +64,25 @@ async function readCredentials(path) {
   }
 }
 
-// Percent means quota remaining. No window label or account metadata is exposed.
+function resetAt(window, now) {
+  for (const value of [window?.reset_at, window?.resets_at]) {
+    const milliseconds = typeof value === 'number' && Number.isFinite(value)
+      ? value < 1e12 ? value * 1000 : value
+      : typeof value === 'string' && value.trim() ? Date.parse(value) : NaN;
+    if (milliseconds > 0 && Number.isFinite(new Date(milliseconds).getTime())) return milliseconds;
+  }
+  const seconds = window?.reset_after_seconds;
+  const milliseconds = now + seconds * 1000;
+  return typeof seconds === 'number' && seconds >= 0 && Number.isFinite(new Date(milliseconds).getTime())
+    ? milliseconds : null;
+}
+
+// Percent means quota remaining. Never expose account metadata or credentials.
 export class ActiveQuotaCollector {
   #cache = new Map();
   #cooldown = new Map();
   #pending = new Map();
+  #claudeCache = new Map();
 
   constructor({ homeDir = homedir(), requestJson: request = requestJson, now = Date.now } = {}) {
     this.homeDir = homeDir;
@@ -75,16 +90,16 @@ export class ActiveQuotaCollector {
     this.now = now;
   }
 
-  async collect() {
+  async collect({ force = false } = {}) {
     return Promise.all(['codex', 'claude'].map(provider => {
       // Serialize each provider, not both: overlapping polls still reread credentials.
-      const pending = (this.#pending.get(provider) || Promise.resolve()).then(() => this.#collect(provider));
+      const pending = (this.#pending.get(provider) || Promise.resolve()).then(() => this.#collect(provider, force));
       this.#pending.set(provider, pending.then(() => {}, () => {}));
       return pending;
     }));
   }
 
-  async #collect(provider) {
+  async #collect(provider, force) {
     const result = (status, percent = null) => ({ provider, percent, status });
     let credentials;
     try {
@@ -114,31 +129,42 @@ export class ActiveQuotaCollector {
     if (provider === 'claude' && entry.scopes != null
       && (!Array.isArray(entry.scopes) || !entry.scopes.includes('user:profile'))) return result('unauthorized');
     if (provider === 'codex' && entry.account_id != null && !text(entry.account_id)) return result('error');
+    if (provider === 'claude') {
+      const snapshot = await queryClaudeQuota({ token, now: this.now, memory: this.#claudeCache,
+        directory: join(this.homeDir, '.config', 'oauth-preset-manager', 'claude-quota-cache'),
+        blockedUntil: this.#cooldown.get(provider) || 0,
+        fetchUsage: async () => parseClaudeUsage(await this._requestJson('https://api.anthropic.com/api/oauth/usage', {
+          method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'anthropic-beta': 'oauth-2025-04-20' },
+          signal: AbortSignal.timeout(10_000),
+        }, 10_000)),
+      });
+      if (snapshot.until > this.now()) this.#cooldown.set(provider, snapshot.until);
+      const daily = snapshot.usage?.daily;
+      if (!Number.isFinite(daily?.percent_remaining)) {
+        return result(snapshot.errorCode === 'expired' ? 'unauthorized' : snapshot.errorCode || 'error');
+      }
+      const milliseconds = Date.parse(daily.reset_time_iso);
+      return { ...result(snapshot.errorCode ? 'cached' : 'ok', daily.percent_remaining), window: '5h',
+        resetAt: Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : null,
+        ...(snapshot.errorCode ? { cachedAt: snapshot.fetchedAt, cacheError: snapshot.errorCode } : {}) };
+    }
     if ((this.#cooldown.get(provider) || 0) > this.now()) return result('rate_limited');
     const cached = this.#cache.get(provider);
-    if (cached?.until > this.now()) return { ...cached.result };
+    if (!force && cached?.until > this.now()) return { ...cached.result };
     this.#cache.delete(provider);
     try {
       const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
-      if (provider === 'codex' && entry.account_id) headers['ChatGPT-Account-Id'] = entry.account_id;
-      if (provider === 'claude') headers['anthropic-beta'] = 'oauth-2025-04-20';
-      const data = await this._requestJson(provider === 'codex'
-        ? 'https://chatgpt.com/backend-api/wham/usage' : 'https://api.anthropic.com/api/oauth/usage',
-      { method: 'GET', headers, signal: AbortSignal.timeout(10_000) }, 10_000);
-      let percent;
-      if (provider === 'codex') {
-        const { primary_window: primary, secondary_window: secondary } = data?.rate_limit || {};
-        // Prefer an explicitly identified 5h window. A metadata-free primary is unlabeled.
-        const window = [primary, secondary].find(value => value?.limit_window_seconds === 18_000)
-          || (primary?.limit_window_seconds == null ? primary : null);
-        const used = window?.used_percent;
-        if (typeof used !== 'number' || !Number.isFinite(used)) throw 0;
-        percent = Math.round(Math.max(0, Math.min(100, 100 - used)));
-      } else {
-        percent = parseClaudeUsage(data).daily?.percent_remaining;
-      }
-      if (!Number.isFinite(percent)) throw 0;
-      const value = result('ok', percent);
+      if (entry.account_id) headers['ChatGPT-Account-Id'] = entry.account_id;
+      const data = await this._requestJson('https://chatgpt.com/backend-api/wham/usage',
+        { method: 'GET', headers, signal: AbortSignal.timeout(10_000) }, 10_000);
+      const { primary_window: primary, secondary_window: secondary } = data?.rate_limit || {};
+      const valid = value => typeof value?.used_percent === 'number' && Number.isFinite(value.used_percent);
+      const selected = [primary, secondary].find(value => valid(value) && value.limit_window_seconds === 18_000)
+        || (valid(primary) ? primary : null);
+      if (!selected) throw 0;
+      const percent = Math.round(Math.max(0, Math.min(100, 100 - selected.used_percent)));
+      const window = new Map([[18_000, '5h'], [86_400, '24h'], [604_800, '7d']]).get(selected.limit_window_seconds) || 'quota';
+      const value = { ...result('ok', percent), window, resetAt: resetAt(selected, this.now()) };
       this.#cache.set(provider, { fingerprint, until: this.now() + 60_000, result: value });
       return { ...value };
     } catch (error) {

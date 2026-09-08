@@ -12,6 +12,7 @@ import readline from 'readline';
 import { StringDecoder } from 'node:string_decoder';
 import { PresetManager, timeUntilReset } from './core.js';
 import { t } from './i18n.js';
+import { startHerdrQuota } from './herdr-quota.js';
 
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json');
@@ -434,6 +435,7 @@ function printMenuSection() {
 }
 
 let pendingMutations = 0;
+let quotaViews = 0;
 
 async function withMutationGuard(action) {
   const ignoreInterrupt = () => {};
@@ -453,7 +455,7 @@ export function enableEscToExit() {
   readline.emitKeypressEvents(process.stdin);
   if (process.stdin.setRawMode) process.stdin.setRawMode(true);
   const onKeypress = (_str, key) => {
-    if (key?.name === 'escape' && !pendingMutations) {
+    if (key?.name === 'escape' && !pendingMutations && !quotaViews) {
       console.log();
       process.exit(process.exitCode || 0);
     }
@@ -1123,7 +1125,8 @@ export function buildQuotaFrame(results, options = {}) {
       const date = [metadata.last_used, metadata.created_at].map(value => Date.parse(value)).find(Number.isFinite);
       return { source, date: date ?? -Infinity };
     }).sort((a, b) => b.date - a.date).slice(0, 2);
-    return [label, ...presets.map(({ source }) => source)].map(line => fitQuotaLine(line, Infinity)).join('\n');
+    const cached = result.cached ? [t('quota_cached', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean) : [];
+    return [label, ...cached, ...presets.map(({ source }) => source)].map(line => fitQuotaLine(line, Infinity)).join('\n');
   };
   const windows = result => [
     [result.provider === 'claude' ? '5h' : 'D', result.daily],
@@ -1223,10 +1226,21 @@ export function buildQuotaFrame(results, options = {}) {
   return { lines: [...header, ...visible, chalk.dim(footer)].map(line => fitQuotaLine(line, width)), page: currentPage, pages };
 }
 
-export async function cmdQuota(manager) {
+export async function cmdQuota(manager, options = {}) {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  let needsRender = true;
+  let sidebarWarning;
+  const sidebar = (options.startHerdrQuota || startHerdrQuota)({ interactive, onWarning: () => {
+    sidebarWarning = t('quota_herdr_unavailable');
+    needsRender = true;
+  } });
+  const onInterrupt = () => { void sidebar.stop().then(() => process.exit(130)); };
+  const onTerminate = () => { void sidebar.stop().then(() => process.exit(143)); };
   const restoreTerminal = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
+  quotaViews++;
   if (interactive) {
+    process.once('SIGINT', onInterrupt);
+    process.once('SIGTERM', onTerminate);
     process.once('exit', restoreTerminal);
     process.stdout.write('\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J');
   }
@@ -1245,7 +1259,6 @@ export async function cmdQuota(manager) {
     await refresh();
     let showGoogle = false;
     let page = 0;
-    let needsRender = true;
     let dimensions = '';
     while (true) {
       const columns = getTerminalWidth();
@@ -1255,7 +1268,8 @@ export async function cmdQuota(manager) {
       if (needsRender) {
         const rootDiskLine = await getRootDiskLine();
         if (`${getTerminalWidth()}x${process.stdout.rows || 24}` !== currentDimensions) continue;
-        const frame = buildQuotaFrame(results, { columns, rows, interactive, showGoogle, page, warning,
+        const frame = buildQuotaFrame(results, { columns, rows, interactive, showGoogle, page,
+          warning: [warning, sidebarWarning].filter(Boolean).join(' · ') || null,
           seconds: interactive ? getQuotaRefreshCountdownSeconds(deadline) : null,
           rootDiskLine, output: process.stdout, refreshResults: manager.lastOpenAIRefreshResults,
           presetMetadata: manager.config?.presets || {} });
@@ -1277,6 +1291,7 @@ export async function cmdQuota(manager) {
         continue;
       }
       if (action === 'r' || action === 'timeout') {
+        sidebar.refresh(action === 'r');
         try { await refresh(); }
         catch {
           warning = t('quota_refresh_failed');
@@ -1291,7 +1306,11 @@ export async function cmdQuota(manager) {
       needsRender = true;
     }
   } finally {
+    await sidebar.stop();
+    quotaViews--;
     if (interactive) {
+      process.off('SIGINT', onInterrupt);
+      process.off('SIGTERM', onTerminate);
       process.off('exit', restoreTerminal);
       restoreTerminal();
     }

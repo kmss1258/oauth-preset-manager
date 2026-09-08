@@ -6,6 +6,7 @@ import { env } from 'process';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { t } from './i18n.js';
+import { queryClaudeQuota } from './claude-quota-cache.js';
 import { assertIdentity, checkCodexFileStore, entryIdentity, getCodexAuthPath, getProxyCodexAuthPath, matchesNative, nativeFromEntry, openAIExpires,
   parseAuth, parseNative, pathsOverlap, privateDir, readBytes, refreshedEntry, safePath,
   selectOpenAI, syncError, proxyAuthFromEntry, writeBytesAtomic } from './codex.js';
@@ -1259,31 +1260,19 @@ export class PresetManager {
       if (target.scopes != null && (!Array.isArray(target.scopes) || !target.scopes.includes('user:profile'))) {
         return { ...result, error: t('quota_claude_scope') };
       }
-      const cached = this._claudeQuotaCache.get(target.id);
-      if (cached && cached.until > Date.now()) return { ...result, ...cached.usage };
-      let usage;
-      let delay = 60_000;
-      try {
-        const data = await this._requestJson('https://api.anthropic.com/api/oauth/usage', {
+      const snapshot = await queryClaudeQuota({ token: target.token,
+        directory: join(this.configDir, 'claude-quota-cache'), memory: this._claudeQuotaCache,
+        fetchUsage: async () => parseClaudeUsage(await this._requestJson('https://api.anthropic.com/api/oauth/usage', {
           method: 'GET', headers: { Authorization: `Bearer ${target.token}`,
             'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json', 'Content-Type': 'application/json' },
-        }, 10_000);
-        usage = { ...parseClaudeUsage(data), error: null };
-      } catch (error) {
-        const status = error.statusCode;
-        const key = status === 401 ? 'quota_claude_expired' : status === 403 ? 'quota_claude_scope'
-          : status === 429 ? 'quota_claude_rate_limited' : 'quota_claude_failed';
-        usage = { error: t(key) };
-        delay = 0;
-        if (status === 429) {
-          const retry = error.retryAfter;
-          const seconds = typeof retry === 'string' && /^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
-          delay = Math.max(60_000, Number.isFinite(seconds) ? seconds : 300_000);
-        }
-      }
-      if (delay > 0) this._claudeQuotaCache.set(target.id, { until: Date.now() + delay, usage });
-      else this._claudeQuotaCache.delete(target.id);
-      return { ...result, ...usage };
+        }, 10_000)),
+      });
+      const key = { expired: 'quota_claude_expired', unauthorized: 'quota_claude_scope',
+        rate_limited: 'quota_claude_rate_limited', error: 'quota_claude_failed' }[snapshot.errorCode];
+      if (!snapshot.usage) return { ...result, error: t(key || 'quota_claude_failed') };
+      return { ...result, ...snapshot.usage, ...(key ? {
+        cached: true, cached_at: new Date(snapshot.fetchedAt).toISOString(), cache_error: t(key),
+      } : {}) };
     }));
   }
 
