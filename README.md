@@ -1,6 +1,6 @@
 # OAuth Preset Manager (OPM) - Node.js Edition
 
-**Manage your OAuth tokens like a pro.** Switch between multiple OpenAI/Google accounts instantly in OpenCode, check detailed quota usage, and keep your development flow uninterrupted.
+**Manage your OAuth tokens like a pro.** Select one preset to switch the same OpenAI OAuth account in OpenCode, Codex and claude-code-proxy's Codex provider together, while preserving other provider entries and checking detailed quota usage.
 
 Now rewritten in **Node.js** for better performance and cross-platform compatibility!
 
@@ -30,6 +30,7 @@ opm
 - **Quota View**: View quota usage for OpenAI, Claude OAuth, Google (Antigravity), OpenCode Go, and Command Code.
   - Supports detailed breakdown for Antigravity models (Flash, Pro, Claude).
   - Visual progress bars and reset timers.
+  - Account cells show at most two preset labels, newest `last_used` first (falling back to `created_at`; unknown dates come last). Command Code account details use at most two lines. This only limits display, not quota collection or account rows.
   - Mobile/narrow terminals use compact account rows with adaptive bars. At 100+ columns, the full table is shown. Window resizing updates the layout without fetching again.
   - Short screens are paginated: `j`/`k`, down/up arrows, or Page Down/Page Up. The countdown stays fixed; `g` toggles Google details, and `q`, Esc, Enter, or Ctrl-C exits. Interactive mode restores the previous terminal screen on exit.
   - `opm q` refreshes automatically every 60 seconds and shows the next-refresh countdown above the table.
@@ -106,12 +107,15 @@ OpenCode uses XDG-style paths on both Linux and macOS, and honors `XDG_DATA_HOME
 
 Common auth file locations:
 - OpenCode: `~/.local/share/opencode/auth.json` or `~/.config/opencode/auth.json`
-- Codex CLI: `~/.codex/auth.json`
+- Codex CLI: `~/.codex/auth.json` (updated by normal preset switching; not a native quota source)
+- claude-code-proxy, Codex provider only: `~/.config/claude-code-proxy/codex/auth.json`
 - Command Code: `~/.commandcode/auth.json` (OPM also checks `~/.commandcode/oauth.json`)
 - Claude Code: `~/.claude/.credentials.json`
 
 ### Environment Variables
 - `OPM_LANG`: Set language (`ko` or `en`)
+- `CODEX_HOME`: Codex-only directory override (surrounding whitespace trimmed; empty means `~/.codex`). A nonempty override never falls back to the default, even if missing or invalid.
+- `CCP_CONFIG_DIR`: claude-code-proxy root override; OPM writes `<root>/codex/auth.json`. Without it, Linux uses `${XDG_CONFIG_HOME:-~/.config}/claude-code-proxy`, macOS uses `~/.config/claude-code-proxy`, and Windows uses `%APPDATA%/claude-code-proxy` (the usual `~/AppData/Roaming` fallback when unset). Surrounding whitespace is trimmed; a nonempty override never silently falls back after a path error.
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Required for Google/Antigravity quota refresh
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Required for Google/Antigravity quota refresh
 - `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go workspace ID (`wrk_...`) for `opm q` usage data
@@ -119,6 +123,39 @@ Common auth file locations:
 - `OPM_COMMAND_CODE_AUTH_PATH`: Optional Command Code credential path override
 - `CLAUDE_CONFIG_DIR`: Claude Code profile directory (default `~/.claude`)
 - `OPM_CLAUDE_AUTH_PATH`: Optional Claude Code `.credentials.json` path override; takes precedence over `CLAUDE_CONFIG_DIR`
+
+### One Switch for Three Destinations
+
+```bash
+opm save work             # Snapshot OpenCode and retain a genuinely matching native ID bundle
+opm switch work           # Apply the same OpenAI OAuth credentials to all three destinations
+opm                       # Selecting a preset uses the same unified switch
+```
+
+There is no separate Codex/proxy preset selection or submenu. A preset with OpenAI OAuth (`openai` or its `codex` alias) automatically updates OpenCode, native Codex, and **only the Codex provider** of [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy). Conflicting aliases are rejected before switching. Without OpenAI OAuth, Codex and proxy auth are explicitly skipped and their existing files/configuration are untouched.
+
+- **Close OpenCode, Codex and claude-code-proxy before switching; restart all afterwards.** The proxy reads auth per request, but pooled websockets and concurrent token refreshes can keep old credentials or race writes. Runtime hot-reload is not guaranteed. Do not run concurrent switches, quota refreshes or logins. Escape/Ctrl-C cannot interrupt the CLI's pending unified switch.
+- **File storage only when syncing OpenAI OAuth.** OPM parses the selected Codex home's `config.toml` with `@iarna/toml` (one dependency with no transitive dependencies). Normal unrelated multiline strings, arrays and inline tables work. A missing store setting uses the default file store; explicit `cli_auth_credentials_store` settings must be `"file"`, including profiles. Keyring, `auto`, malformed TOML and enabled encrypted-secret storage settings are rejected before refreshing or replacing targets. OPM never edits config. External launch flags/managed overrides must also use file storage; they are not inspected.
+- **Save and recognition are offline.** A native ChatGPT bundle is retained only when its access and refresh tokens match the OpenCode entry exactly and available user/workspace claims agree. A shared business workspace/account ID is never sufficient. Genuine inline `id_token`/`idToken` values can also be retained. Existing native bytes, including unknown metadata and `last_refresh`, are preserved when reused.
+- **Existing presets without an ID token require refresh on user switch.** OPM uses the existing OpenAI refresh grant and shared client ID. It requires a genuine returned JWT-shaped ID token and consistent available identity before writing any target. If the response still lacks an ID, the switch fails without replacing targets; OPM never synthesizes JWTs. Opaque access tokens are supported. A retained current bundle with known usable access expiry avoids unnecessary refresh. Missing/invalid expiry is derived from the access JWT's numeric `exp`, or obtained by refresh; ID-token expiry and guessed lifetimes are never substituted. Structural validation is not cryptographic signature or live login verification.
+- Rotated access/refresh/expiry/account context is retained in the selected preset and active OpenCode auth, and the native ID/access/refresh/account/`last_refresh` bundle is stored at `~/.config/oauth-preset-manager/preset-sidecars/codex/<name>.json`. `opm_identity` preserves known user/subject/workspace claims across responses that omit an ID token; it is metadata, not a fabricated token.
+- The proxy gets **flat JSON** with exactly `access`, `refresh`, `expires` (numeric Unix milliseconds), and canonical `accountId`. These are the exact final values also retained in OpenCode/the selected preset, not native Codex's nested `tokens` schema. Recognition accepts the proxy's legacy `account_id` alias but rejects conflicting aliases. OPM creates the Codex auth destination if missing, does not install/start the proxy or use an upload API, and never writes the proxy's other provider files or configuration.
+- Existing targets are privately backed up under `backups/` before atomic replacement. Failure to back up aborts the switch. Any target/config write failure attempts to restore **every** affected file: OpenCode, Codex, proxy Codex auth, selected preset, linked bundle, applicable Go session and OPM config. This includes failure at the third destination after both prior apps were written. Managed files/directories use `0600`/`0700`. Symlinks, non-regular files, unsafe names and mutually overlapping auth roots/OPM internal destinations are refused.
+- Recognition compares all three destinations for linked presets, regardless of last selection; Go environment overrides cannot bypass the Codex or proxy checks. It performs no refresh. Deletion removes the linked native bundle; credential distribution invalidates links that no longer match instead of keeping stale ID tokens.
+
+Proxy format/path reference: [`src/paths.rs`](https://github.com/raine/claude-code-proxy/blob/55bf0b5818b461e1860964809726f99d2fd52c10/src/paths.rs) and [`src/providers/codex/auth/token_store.rs`](https://github.com/raine/claude-code-proxy/blob/55bf0b5818b461e1860964809726f99d2fd52c10/src/providers/codex/auth/token_store.rs).
+
+#### Rotation Recovery
+
+OAuth token rotation **cannot be rolled back remotely**. Before requesting refresh, OPM reserves a private `refresh-recovery/<SHA256(refresh)>.json` journal. It records the returned credentials **before any target write**, even if the response lacks a usable ID token. These records are not part of local rollback.
+
+- A successful recorded rotation is followed on later switches, including duplicate presets that still hold the old refresh token. The old credentials are not silently restored from a stale linked bundle. Missing-ID responses require a later explicit switch to obtain a genuine ID using the returned refresh credentials.
+- An unknown access token sharing an unchanged refresh token is **not assumed newer or older** than a recovery journal. Recognition, kickoff and quota recovery fail closed. An explicit preset switch must revalidate it through refresh, even if an old native sidecar matches. A fresh login is not permanently blocked merely for unknown access lineage, but it must produce a valid, identity-consistent refresh response before installation.
+- A transport failure leaves a pending record because rotation may already have occurred. Preserve it and log in again, then save the fresh login credentials. Incomplete/conflicting recovery data fails closed rather than guessing.
+- If the response journal cannot be written, OPM attempts an independent `backups/rotated_openai_recovery_*.json` copy and reports the recovery caveat without printing tokens. Keep both clients and the proxy closed while resolving a partial rollback; preserve `refresh-recovery/` and `backups/` for manual recovery. Do not blindly delete recovery records or reapply an old refresh token.
+- Recovery records/backups contain credentials and are intentionally retained, including after deleting a preset because another preset may share the refresh lineage. Protect them. Trusted, non-shared storage ancestors are required. Caught-error rollback is not a crash-safe multi-file transaction and cannot guarantee recovery after process termination or power loss.
+
+**Quota scope:** Native Codex and proxy auth are not additional quota sources and are not rewritten by quota collection. Existing OpenCode OAuth refreshes retain returned ID data or invalidate the stale linked bundle, with recovery records protecting later switches. The top-level OpenCode `codex` key remains an OpenAI OAuth alias.
 
 ### Claude OAuth quota
 
@@ -161,6 +198,7 @@ If the stored global Go session is missing or malformed, saving/overwriting a pr
 ├── src/
 │   ├── cli.js          # Main CLI entry point
 │   ├── core.js         # PresetManager and quota logic
+│   ├── codex.js        # Codex/proxy auth formats and safe file operations
 │   └── i18n.js         # Translations (KO/EN)
 ├── package.json        # Node.js package config
 ├── install.sh          # Quick installer
