@@ -1149,7 +1149,7 @@ export function buildQuotaFrame(results, options = {}) {
     });
     for (const [index, result] of items.entries()) {
       if (index > 0 && hasPresetLabel(items[index - 1], 'Current Active') && !hasPresetLabel(result, 'Current Active')) {
-        table.push(['', '', '', '', '', '']);
+        table.push(['', '', '', '', '', ''], ['', '', '', '', '', '']);
       }
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
         : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
@@ -1170,7 +1170,8 @@ export function buildQuotaFrame(results, options = {}) {
     }
     if (items.length) body.push(...table.toString().split('\n'));
   } else {
-    for (const result of items) {
+    for (const [index, result] of items.entries()) {
+      if (index > 0 && hasPresetLabel(items[index - 1], 'Current Active') && !hasPresetLabel(result, 'Current Active')) body.push('');
       accountStarts.push(body.length);
       const provider = { openai: 'OpenAI', claude: 'Claude', opencodego: 'OpenCode Go', commandcode: 'Command Code', google: 'Google' }[result.provider] || result.provider;
       body.push(chalk.cyan.bold(emphasize(result, `● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`)));

@@ -37,6 +37,7 @@ opm
   - Account cells show at most two preset labels, newest `last_used` first (falling back to `created_at`; unknown dates come last). Command Code account details use at most two lines. This only limits display, not quota collection or account rows.
   - Mobile/narrow terminals use compact account rows with adaptive bars. At 100+ columns, the full table is shown. Window resizing updates the layout without fetching again.
   - Short screens are paginated: `j`/`k`, down/up arrows, or Page Down/Page Up. The countdown stays fixed; `g` toggles Google details, and `q`, Esc, Enter, or Ctrl-C exits. Interactive mode restores the previous terminal screen on exit.
+  - Active accounts form the first group, separated from saved/non-active accounts by exactly two blank rows in both wide and compact layouts.
   - `opm q` refreshes automatically every 60 seconds and shows the next-refresh countdown above the table.
   - Press `r` or `ㄱ` in `opm q` to refresh immediately without changing the current quota layout.
   - Shows fixed UTC peak periods Monday-Friday only (01:00–04:00 and 06:00–10:00 UTC; 10:00–13:00 and 15:00–19:00 KST), with a `HH:MM:SS` countdown one hour before and throughout each peak window. Weekends are off. Active peaks use a rotating pastel border in interactive terminals.

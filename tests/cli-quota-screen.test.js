@@ -97,9 +97,10 @@ test('only the first normalized account is highlighted without changing layout o
   }
 });
 
-test('quota separates the active group once in wide tables without adding compact gaps', () => {
+test('quota separates active and saved groups by exactly two blank rows in both layouts', () => {
   const active = [
     { provider: 'openai', account_id: 'active-one', presets: ['(Current Active)'], daily: quota },
+    { provider: 'opencodego', account_id: 'active-go', presets: ['(Current Active)'], daily: quota, weekly: quota, monthly_percent: 29 },
     { provider: 'claude', account_id: 'active-two', presets: ['(Current Active)'], daily: quota },
   ];
   const saved = ['saved-one', 'saved-two'].map(account_id => ({ provider: 'openai', account_id, daily: quota }));
@@ -111,22 +112,29 @@ test('quota separates the active group once in wide tables without adding compac
         const lines = buildQuotaFrame(items, { columns }).lines.map(stripAnsi);
         if (columns >= 100) {
           const blankRows = lines.flatMap((line, index) => /^│[ │]+│$/.test(line) ? [index] : []);
-          assert.equal(blankRows.length, current.length && remaining.length ? 1 : 0);
+          assert.equal(blankRows.length, current.length && remaining.length ? 2 : 0);
           if (blankRows.length) {
             const boundary = blankRows[0];
             const activeLines = buildQuotaFrame(current, { columns }).lines.map(stripAnsi);
             assert.deepEqual(lines.slice(2, boundary), activeLines.slice(2, -1));
-            assert.ok(lines[boundary + 1].includes('saved-one'));
+            assert.deepEqual(blankRows, [boundary, boundary + 1]);
+            assert.ok(lines[boundary + 2].includes('saved-one'));
             assert.equal(lines[boundary].split('│').length, 8);
+            assert.equal(lines[boundary + 1].split('│').length, 8);
           }
         } else {
-          assert.equal(lines.filter(line => line === '').length, items.length - 1);
+          const hasBoundary = Boolean(current.length && remaining.length);
+          assert.equal(lines.filter(line => line === '').length, items.length - 1 + Number(hasBoundary));
           assert.ok(lines.at(-1));
-          for (let index = 1; index < lines.length; index++) {
-            if (lines[index].startsWith('●') && index > 2) {
-              assert.equal(lines[index - 1], '');
-              assert.notEqual(lines[index - 2], '');
+          let accountIndex = 0;
+          for (let index = 2; index < lines.length; index++) {
+            if (!lines[index].startsWith('●')) continue;
+            if (accountIndex > 0) {
+              const gap = hasBoundary && accountIndex === current.length ? 2 : 1;
+              assert.deepEqual(lines.slice(index - gap, index), Array(gap).fill(''));
+              assert.notEqual(lines[index - gap - 1], '');
             }
+            accountIndex++;
           }
         }
         for (const rows of [5, 10, 24]) {
