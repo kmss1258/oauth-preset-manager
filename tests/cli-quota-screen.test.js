@@ -97,7 +97,7 @@ test('only the first normalized account is highlighted without changing layout o
   }
 });
 
-test('quota separates active and saved groups by exactly two blank rows in both layouts', () => {
+test('active and saved table rows occupy at most two physical lines without spacer rows', () => {
   const active = [
     { provider: 'openai', account_id: 'active-one', presets: ['(Current Active)'], daily: quota },
     { provider: 'opencodego', account_id: 'active-go', presets: ['(Current Active)'], daily: quota, weekly: quota, monthly_percent: 29 },
@@ -112,27 +112,22 @@ test('quota separates active and saved groups by exactly two blank rows in both 
         const lines = buildQuotaFrame(items, { columns }).lines.map(stripAnsi);
         if (columns >= 100) {
           const blankRows = lines.flatMap((line, index) => /^│[ │]+│$/.test(line) ? [index] : []);
-          assert.equal(blankRows.length, current.length && remaining.length ? 2 : 0);
-          if (blankRows.length) {
-            const boundary = blankRows[0];
-            const activeLines = buildQuotaFrame(current, { columns }).lines.map(stripAnsi);
-            assert.deepEqual(lines.slice(2, boundary), activeLines.slice(2, -1));
-            assert.deepEqual(blankRows, [boundary, boundary + 1]);
-            assert.ok(lines[boundary + 2].includes('saved-one'));
-            assert.equal(lines[boundary].split('│').length, 8);
-            assert.equal(lines[boundary + 1].split('│').length, 8);
-          }
+          assert.equal(blankRows.length, 0);
+          const starts = [...current, ...remaining].map(item => lines.findIndex(line => line.includes(item.account_id)));
+          starts.forEach((start, index) => {
+            assert.ok(start >= 0);
+            const end = starts[index + 1] ?? lines.length - 1;
+            assert.ok(end - start >= 1 && end - start <= 2);
+          });
         } else {
-          const hasBoundary = Boolean(current.length && remaining.length);
-          assert.equal(lines.filter(line => line === '').length, items.length - 1 + Number(hasBoundary));
+          assert.equal(lines.filter(line => line === '').length, items.length - 1);
           assert.ok(lines.at(-1));
           let accountIndex = 0;
           for (let index = 2; index < lines.length; index++) {
             if (!lines[index].startsWith('●')) continue;
             if (accountIndex > 0) {
-              const gap = hasBoundary && accountIndex === current.length ? 2 : 1;
-              assert.deepEqual(lines.slice(index - gap, index), Array(gap).fill(''));
-              assert.notEqual(lines[index - gap - 1], '');
+              assert.equal(lines[index - 1], '');
+              assert.notEqual(lines[index - 2], '');
             }
             accountIndex++;
           }
@@ -214,7 +209,7 @@ test('Command Code account is at most two physical lines even with verbose sourc
   assert.deepEqual(item, original);
 });
 
-test('Command Code errors fit two physical lines without mutating errors or limiting other providers', () => {
+test('quota errors fit two table lines without mutating source errors', () => {
   const certificate = 'Command Code API error: self-signed certificate in certificate chain';
   const errors = [certificate, 'x'.repeat(300), '인증서오류👩‍💻'.repeat(30),
     'Command Code API error:\nself-signed\r\ncertificate\t in\ncertificate chain',
@@ -264,8 +259,9 @@ test('Command Code errors fit two physical lines without mutating errors or limi
           const otherLines = buildQuotaFrame([other], { columns }).lines.map(stripAnsi);
           if (dataRows) {
             const cells = otherLines.filter(line => line.startsWith('│')).slice(1).map(line => line.split('│')[2].trim());
-            assert.ok(cells.length > 2);
-            assert.equal(cells.join(' '), certificate);
+            assert.ok(cells.length <= 2);
+            assert.match(cells[0], /^self-signed/);
+            assert.ok(cells.at(-1).endsWith('…'));
           } else assert.equal(otherLines.at(-1), fitQuotaLine(certificate, columns - 1));
         }
         assert.deepEqual(item, original);
@@ -287,7 +283,7 @@ test('cached Claude usage retains bars with an explicit cache age and failure no
       for (const columns of [39, 99, 120, 180]) {
         const lines = buildQuotaFrame([cached], { columns }).lines.map(stripAnsi);
         assert.match(lines.join('\n'), /75%/);
-        assert.match(lines.join('\n'), /캐시|cache/);
+        assert.match(lines.join('\n'), /캐시|cache/i);
         assert.match(lines.join('\n'), /Rate limited/);
         assert.ok(lines.every(line => stringWidth(line) <= columns - 1));
       }
@@ -354,7 +350,7 @@ test('countdown digit transitions keep a stable layout at every width including 
   } finally { setLanguage('en'); }
 });
 
-test('Go monthly percentage and reset use one line when possible and two at the table boundary', () => {
+test('Go monthly percentage and reset share the second table line, compacting when needed', () => {
   const item = { provider: 'opencodego', account_id: 'wrk_test', daily: quota, weekly: quota,
     monthly_percent: 64, monthly_reset_iso: new Date(Date.now() + (720 * 60 + 59) * 60000 + 30000).toISOString() };
   for (const columns of [39, 99, 100, 120, 160]) {
@@ -364,7 +360,8 @@ test('Go monthly percentage and reset use one line when possible and two at the 
     assert.ok(monthly >= 0, `${columns}: ${cells}`);
     assert.match(cells[monthly], /64%/);
     assert.match(cells.slice(monthly).join('\n'), /720h 59m/);
-    if (columns === 100) assert.equal(cells.length - monthly, 2);
+    assert.equal(cells.length - monthly, 1);
+    if (columns === 100) assert.match(cells[monthly], /M 64% 720h 59m/);
     else assert.match(cells[monthly], /64% · 720h 59m/);
   }
 });

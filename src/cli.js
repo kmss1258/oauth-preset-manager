@@ -47,6 +47,15 @@ export function fitQuotaLine(text, width) {
   return result;
 }
 
+export function fitQuotaCell(text, width) {
+  const lines = String(text).split('\n');
+  const visible = lines.slice(0, 2).map(line => fitQuotaLine(line, width));
+  if (lines.length > 2 && !stripAnsi(visible[1]).endsWith('…')) {
+    visible[1] = fitQuotaLine(visible[1] + '…', width);
+  }
+  return visible.join('\n');
+}
+
 function gradientCyan(text) {
   return chalk.cyan.bold(text);
 }
@@ -1122,7 +1131,7 @@ export function buildQuotaFrame(results, options = {}) {
   const items = getQuotaTableRowItems(normalizeQuotaResults(results), showGoogle);
   const highlightTop = interactive && (options.output || process.stdout).isTTY && !process.env.NO_COLOR;
   const emphasize = (result, text) => highlightTop && result === items[0] ? chalk.bgBlackBright.white.bold(text) : text;
-  const account = result => {
+  const account = (result, compact = false) => {
     if (result.provider === 'commandcode') return formatCommandCodeAccountCell(result);
     const sources = result.presets || [];
     const label = formatAccountLabel(result) + (hasPresetLabel(result, 'Current Active') ? ' (Current Active)' : '');
@@ -1132,6 +1141,14 @@ export function buildQuotaFrame(results, options = {}) {
       return { source, date: date ?? -Infinity };
     }).sort((a, b) => b.date - a.date).slice(0, 2);
     const cached = result.cached ? [t('quota_cached', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean) : [];
+    if (compact) {
+      const cache = result.cached ? [t('quota_cached_compact', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean).join(' · ') : '';
+      const detail = [cache, ...presets.map(({ source }) => source)].filter(Boolean).join(', ');
+      const activeOnly = hasPresetLabel(result, 'Current Active') && !detail
+        && result.provider !== 'opencodego' && !result.extra_windows?.length;
+      return [activeOnly ? formatAccountLabel(result) : label, activeOnly ? '(Current Active)' : detail].filter(Boolean)
+        .map(line => fitQuotaLine(line, Infinity)).join('\n');
+    }
     return [label, ...cached, ...presets.map(({ source }) => source)].map(line => fitQuotaLine(line, Infinity)).join('\n');
   };
   const windows = result => [
@@ -1147,10 +1164,7 @@ export function buildQuotaFrame(results, options = {}) {
       colWidths: [14, 18, 12, 18, 12, width - 81],
       style: { head: [], border: ['gray'], compact: true }, wordWrap: true,
     });
-    for (const [index, result] of items.entries()) {
-      if (index > 0 && hasPresetLabel(items[index - 1], 'Current Active') && !hasPresetLabel(result, 'Current Active')) {
-        table.push(['', '', '', '', '', ''], ['', '', '', '', '', '']);
-      }
+    for (const result of items) {
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
         : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
       const details = (result.provider === 'commandcode' || (result.provider === 'opencodego' && result.error) ? [] : windows(result).slice(2)).map(([label, window]) => {
@@ -1158,20 +1172,25 @@ export function buildQuotaFrame(results, options = {}) {
           width: Math.min(10, accountWidth - stringWidth(label) - 6) });
         const line = `${label} ${bar}`;
         const reset = formatReset(window?.reset_time_iso);
-        return stringWidth(`${line} · ${reset}`) <= accountWidth ? `${line} · ${reset}` : `${line}\n${reset}`;
+        if (stringWidth(`${line} · ${reset}`) <= accountWidth) return `${line} · ${reset}`;
+        const compactWidth = accountWidth - stringWidth(label) - stringWidth(reset) - 9;
+        if (compactWidth >= 1) {
+          return `${label} ${formatPercent(window?.percent_remaining, { ...percentOptions, width: compactWidth })} · ${reset}`;
+        }
+        const percent = window?.percent_remaining == null ? '-' : `${window.percent_remaining}%`;
+        return `${label} ${percent} ${reset}`;
       });
       table.push([
         emphasize(result, result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider),
-        result.error ? (['commandcode', 'opencodego'].includes(result.provider) ? formatQuotaError(result.error, 16).join('\n') : chalk.red(result.error)) : formatPercent(result.daily?.percent_remaining, percentOptions),
+        result.error ? formatQuotaError(result.error, 16).join('\n') : formatPercent(result.daily?.percent_remaining, percentOptions),
         formatReset(result.daily?.reset_time_iso), formatPercent(result.weekly?.percent_remaining, percentOptions),
-        formatReset(result.weekly?.reset_time_iso), [account(result), ...details].join('\n').split('\n').map((line, index) =>
+        formatReset(result.weekly?.reset_time_iso), [account(result, true), ...details].join('\n').split('\n').map((line, index) =>
           index === 0 ? emphasize(result, fitQuotaLine(line, accountWidth)) : fitQuotaLine(line, accountWidth)).join('\n'),
-      ].map(cell => String(cell).split('\n').map(line => fitQuotaLine(line, Infinity)).join('\n')));
+      ].map((cell, index) => fitQuotaCell(cell, [12, 16, 10, 16, 10, accountWidth][index])));
     }
     if (items.length) body.push(...table.toString().split('\n'));
   } else {
-    for (const [index, result] of items.entries()) {
-      if (index > 0 && hasPresetLabel(items[index - 1], 'Current Active') && !hasPresetLabel(result, 'Current Active')) body.push('');
+    for (const result of items) {
       accountStarts.push(body.length);
       const provider = { openai: 'OpenAI', claude: 'Claude', opencodego: 'OpenCode Go', commandcode: 'Command Code', google: 'Google' }[result.provider] || result.provider;
       body.push(chalk.cyan.bold(emphasize(result, `● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`)));
