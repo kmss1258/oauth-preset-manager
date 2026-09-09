@@ -96,19 +96,38 @@ opm q
 > 넓은 창은 표, 모바일·좁은 창은 작은 프로그레스바로 보여줍니다. 높이가 극도로 작으면 상태/종료 표시만 남기고, 창을 키우면 복원됩니다. 파이프 출력은 커서 제어·페이지 나눔 없이 한 번만 출력합니다.
 > 대화형 쿼터 화면은 60초마다 자동 갱신됩니다. 표 바로 위의 다음 갱신 카운트다운을 확인하거나 `r` 또는 `ㄱ`으로 즉시 갱신할 수 있습니다.
 
-### Herdr: 왼쪽 Spaces 실시간 쿼터
+### Herdr: 왼쪽 Spaces 실시간 쿼터·시스템 자원
 
-Herdr 안에서 **홈(`~`)이든 어디서든 평소처럼 `opm q`**를 실행하세요. 기존 쿼터 화면은 유지하고, 명령을 실행한 Space 아래에도 두 줄을 표시합니다. 아래 숫자는 예시입니다.
+Herdr 안에서 **홈(`~`)이든 어디서든 평소처럼 `opm q`**를 실행하세요. 기존 쿼터 화면은 유지하고, 실행한 Space 아래에 다음처럼 표시합니다. 숫자는 예시입니다.
 
-![OPM 쿼터 화면 왼쪽 Herdr Spaces에 초록 CX와 주황 CC의 잔여량·리셋 시간을 표시한 화면](docs/images/herdr-spaces-quota.png)
+```text
+CX 75% 2h14m · ▰▰▰▱
+CC* 38% 47m · ▰▰▱▱
+Disk / 850/930G · ▰▰▰▰
+RAM 24/64G · ▰▰▱▱
+GPU0 6.2/16G · ▰▰▱▱
+GPU1 1.4/8G · ▰▱▱▱
+```
 
-*예시 쿼터 데이터로 실행한 실제 Herdr 터미널 캡처입니다. 실제 계정 정보는 포함하지 않았습니다.*
+Herdr가 토큰 사이에 `·`를 넣으므로 기본 폭에서 전체 용량이 잘리지 않도록 숫자를 막대 앞에 묶었습니다. 긴 디스크 경로나 큰 용량은 사이드바 폭을 넓혀야 할 수 있습니다.
+
+**표시 설정:** `opm` → **Herdr 사이드바 설정**, 또는 **`opm settings`**. 인증이나 프리셋 없이도 접근할 수 있습니다. CX·CC·Disk·RAM·GPU VRAM·색상 경고를 각각 켜고 끄며, 디스크 경로 추가/제거, GPU 전체 자동 감지/개별 선택(UUID 저장), GPU 갱신 2/5/10초를 설정합니다. 저장하면 **사용자 전역**으로 실행 중인 모든 `opm q`에 수 초 내 반영하고, 취소하면 바뀌지 않습니다. 인증 설정과 별개인 `~/.config/oauth-preset-manager/sidebar.json`에 저장합니다. 잘못된 파일은 덮어쓰지 않으며 실행 중에는 마지막 유효 설정을 유지합니다.
+
+- **Disk·RAM·VRAM은 사용량/전체 용량과 찬 비율 막대**입니다. `G`는 GiB입니다. Disk는 기본 `/`, 같은 파일시스템의 경로는 한 행으로 합칩니다. 실제 빈 블록을 기준으로 사용량을 계산하며, 일반 사용자에게 허용된 가용 공간과 구분합니다. 기존 쿼터 표 상단의 가용 공간 표시는 유지합니다.
+- **경고 막대:** 시스템 자원 사용률 80% 이상 노랑, 90% 이상 빨강. CX/CC는 잔여 20% 이하 노랑, 10% 이하 빨강. 라벨은 유지하고 막대만 바뀌며, 경고를 끄면 정상색을 유지합니다.
+- RAM은 Linux `MemTotal - MemAvailable` 기준 2초 갱신, OS 근사치는 `~`로 표시합니다. Disk는 15초, NVIDIA VRAM은 기본 2초입니다. `nvidia-smi` 한 번으로 전체 GPU를 조회하며 느린 OAuth 조회와 독립적으로 갱신합니다. NVIDIA 도구/장치가 없으면 숨기고, 이전에 감지했거나 선택한 GPU의 조회 실패는 오래된 값이나 가짜 0 대신 `N/A`입니다. 선택한 UUID의 현재 index를 모르면 `GPU?`로 표시합니다.
+- 호스트 RAM·파일시스템·NVIDIA 장치 전체 VRAM 기준입니다. 프로세스별/cgroup 제한, AMD·Apple GPU, MIG 인스턴스별 내역은 지원하지 않습니다. 컨테이너 overlay 용량은 물리 디스크와 다를 수 있습니다.
+- 끈 항목은 metadata를 지우고 **사이드바 전용 수집**을 중단합니다. 일반 쿼터 표의 조회 대상은 바꾸지 않습니다. 등록된 빈 행이 Herdr 설정에 남더라도 화면에서는 숨겨집니다. 최대 16행 중 사용자 행을 먼저 보존하고 넘치는 항목은 요약으로 표시합니다. 남는 행이 없으면 사용자 행을 덮어쓰지 않고 경고합니다.
+
+![기존 CX·CC 쿼터 전용 Herdr 캡처](docs/images/herdr-spaces-quota.png)
+
+*기존 쿼터 전용 예시 캡처입니다. 현재는 위 시스템 자원 행과 숫자 우선 압축 배치도 지원합니다.*
 
 - **CX는 초록, CC는 주황**입니다. 저장된 프리셋 전체가 아니라 **활성 네이티브 Codex·Claude Code의 파일 기반 계정**입니다. %는 남은 쿼터, 시간은 리셋까지 남은 시간입니다. Codex는 5시간 구간을 우선 사용하고 없으면 실제 primary 구간을 사용합니다. 주간 전용은 `7d`, 불명확한 구간은 `quota`로 구분합니다.
 - Herdr 본체 수정·추가 pane·Space 이름 변경·별도 데몬이 없습니다. Herdr 0.8.2의 workspace metadata와 컬러 Space 행을 사용합니다. **펼친 데스크톱 사이드바**에서만 표시되며 접힌 상태/모바일 레이아웃에서는 보이지 않습니다.
-- 쿼터는 60초마다 조회하고 남은 시간·표시 유효기간은 15초마다 갱신합니다. `r`/`ㄱ` 수동 갱신도 연결되며 429 대기 시간을 우회하지 않습니다. Claude는 먼저 조회하고 실패하면 마지막 성공값을 표시합니다. **`CC*`는 실시간 값이 아닌 캐시**라는 뜻입니다. 사용 가능한 캐시가 없으면 `login`, `expired`, `auth`, `429`, `error`를 표시합니다. 사이드바 수집기는 사용량 GET만 실행하며 인증 갱신·인증 파일 덮어쓰기·추론을 하지 않습니다.
-- `opm q`를 종료하면 두 줄을 지우고, 강제 종료되면 마지막 표시가 45초 이내 만료됩니다. 같은 Space에서 여러 개를 실행하면 하나만 보고하며 해당 프로세스 종료 후 대기 중인 다른 실행이 15초 이내 이어받습니다. 다른 Space는 독립적으로 표시하고, pane을 옮기면 다음 갱신 때 새 Space를 따라갑니다.
-- 첫 실행 시 Herdr 설정을 옆에 백업(`config.toml.opm-backup-*`)하고 기존 키·테마·Space 행·주석을 보존한 채 두 행만 등록합니다. 설정 검사 후 reload하며 `HERDR_CONFIG_PATH`를 따릅니다. 지원하지 않는 구문/잘못된 설정은 덮어쓰지 않고 연동 경고만 표시하며 기존 쿼터 화면은 유지합니다. Herdr 밖이나 파이프 출력에서는 설정/표시 작업을 하지 않습니다.
+- 쿼터는 60초마다 조회하고, 남은 시간은 독립적으로 갱신하며 값이 같아도 15초 이내마다 표시 유효기간을 연장합니다. `r`/`ㄱ` 수동 갱신도 연결되며 429 대기 시간을 우회하지 않습니다. Claude는 먼저 조회하고 실패하면 마지막 성공값을 표시합니다. **`CC*`는 실시간 값이 아닌 캐시**라는 뜻입니다. 사용 가능한 캐시가 없으면 `login`, `expired`, `auth`, `429`, `error`를 표시합니다. 사이드바 수집기는 사용량 GET만 실행하며 인증 갱신·인증 파일 덮어쓰기·추론을 하지 않습니다.
+- `opm q`를 종료하면 해당 사이드바 표시를 모두 지우고, 강제 종료되면 마지막 표시가 45초 이내 만료됩니다. 같은 Space에서 여러 개를 실행하면 하나만 보고하며 해당 프로세스 종료 후 대기 중인 다른 실행이 15초 이내 이어받습니다. 다른 Space는 독립적으로 표시하고, pane을 옮기면 다음 갱신 때 새 Space를 따라갑니다.
+- 첫 실행 시 Herdr 설정을 옆에 백업(`config.toml.opm-backup-*`)하고 기존 키·테마·사용자 Space 행·주석을 보존한 채 필요한 행을 등록합니다. 설정 검사 후 reload하며 `HERDR_CONFIG_PATH`를 따릅니다. 지원하지 않는 구문/잘못된 설정은 덮어쓰지 않고 연동 경고만 표시하며 기존 쿼터 화면은 유지합니다. Herdr 밖이나 파이프 출력에서는 설정/표시 작업을 하지 않습니다.
 
 참고: [Herdr 0.8.2 사이드바 설정](https://herdr.dev/docs/0.8.2/configuration/), [workspace metadata 명령](https://herdr.dev/docs/cli-reference/).
 
@@ -165,8 +184,9 @@ OpenCode는 Linux와 macOS에서 모두 XDG 스타일 경로를 사용하며, `X
 - `CCP_CONFIG_DIR`: claude-code-proxy 루트 재정의. `<루트>/codex/auth.json`에 씁니다. 없으면 Linux는 `${XDG_CONFIG_HOME:-~/.config}/claude-code-proxy`, macOS는 `~/.config/claude-code-proxy`, Windows는 `%APPDATA%/claude-code-proxy`(APPDATA가 없으면 통상적인 `~/AppData/Roaming` 하위)를 사용합니다. 앞뒤 공백을 제거하며, 명시한 경로에 오류가 있어도 기본 경로로 돌아가지 않습니다.
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Google/Antigravity 할당량 갱신에 필요
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Google/Antigravity 할당량 갱신에 필요
-- `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go quota 조회용 workspace ID (`wrk_...`)
-- `OPENCODE_GO_AUTH_COOKIE`: OpenCode Go quota 조회용 `opencode.ai`의 `auth` 쿠키
+- `OPENCODE_GO_API_KEY`: Go 사용량 조회 키 override. 없으면 선택된 활성 auth 파일의 `opencode-go` API 키를 사용합니다.
+- `OPENCODE_GO_WORKSPACE_ID`: API 키가 없을 때만 사용하는 기존 쿠키 조회용 workspace ID (`wrk_...`)
+- `OPENCODE_GO_AUTH_COOKIE`: API 키가 없을 때만 사용하는 `opencode.ai`의 `auth` 쿠키
 - `OPM_COMMAND_CODE_AUTH_PATH`: Command Code 인증 파일 경로 재정의
 - `CLAUDE_CONFIG_DIR`: Claude Code 프로필 디렉터리 (기본 `~/.claude`)
 - `OPM_CLAUDE_AUTH_PATH`: Claude Code `.credentials.json` 경로 재정의 (`CLAUDE_CONFIG_DIR`보다 우선)
@@ -217,11 +237,15 @@ OAuth 토큰 회전은 **서버에서 롤백할 수 없습니다**. 갱신 요�
 
 참고 구현: [CodexBar](https://github.com/steipete/CodexBar/blob/170a4d41c6d69e2bb25daac4fb088a92de2f9bc4/Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift), [Headroom](https://github.com/headroomlabs-ai/headroom/blob/e67b3c8a29443a60d6b0018fb22f525c5cd7e709/headroom/subscription/client.py), [Claude Code 인증 문서](https://code.claude.com/docs/en/authentication).
 
-### OpenCode Go 세션
+### OpenCode Go 쿼터와 기존 세션
 
-OpenCode Go API key는 모델 사용을 활성화합니다. `opm q`에서 5시간·주간·월간 사용량을 가져오려면 현재 OpenCode Go workspace 페이지가 브라우저 `auth` 쿠키도 요구하므로 위 두 환경 변수를 함께 설정해야 합니다.
+**이제 API 키만으로 쿼터를 조회합니다.** `GET https://opencode.ai/zen/go/v1/usage`에 Bearer 인증으로 요청하고 rolling(5시간)·주간·월간 사용률을 잔여율과 절대 리셋 시각으로 변환합니다. HTTP 200의 `rate-limited` 구간도 정상 쿼터 데이터입니다.
 
-환경 변수 대신 `~/.config/oauth-preset-manager/opencode-go.json`에 두 값을 저장할 수도 있으며, 환경 변수가 있으면 그것이 우선합니다. 이 파일은 비공개로 유지하세요.
+`OPENCODE_GO_API_KEY`가 우선이고, 없으면 OPM이 선택한 활성 OpenCode auth 파일의 `opencode-go: { "type": "api", "key": "..." }`를 사용합니다. 저장된 프리셋 키 전체를 순회하지 않습니다. 키가 있는데 실패하면 다른 쿠키 계정으로 전환하지 않습니다. 401은 잘못된 키, 403은 해당 키의 사용자/workspace에 Go 구독 권한 없음입니다. 429는 Retry-After를 준수하며 헤더가 없으면 5분, 최소 1분 기다립니다. 대기 상태는 키 해시별 메모리에 보관해 다른 키의 결과를 섞지 않습니다. 추론이나 인증 파일 변경은 하지 않습니다.
+
+참고: [공식 Go 사용량 엔드포인트](https://github.com/anomalyco/opencode/blob/d4704347465c1ee63d0c213ed00e648e7f0231c5/packages/console/app/src/routes/zen/go/v1/usage.ts).
+
+**API 키가 없는 경우에만** 기존 workspace 페이지 조회를 유지합니다. 두 쿠키 환경 변수 또는 `~/.config/oauth-preset-manager/opencode-go.json`을 사용하며 환경 변수가 우선입니다. 파일은 비공개로 유지하세요.
 
 ```json
 {

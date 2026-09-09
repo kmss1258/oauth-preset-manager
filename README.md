@@ -98,18 +98,37 @@ opm q
 > The interactive quota screen refreshes automatically every 60 seconds and shows the next refresh above the table. Press `r` or `ㄱ` to refresh immediately.
 > Peak periods are fixed Monday-Friday schedules: 01:00–04:00 UTC / 10:00–13:00 KST and 06:00–10:00 UTC / 15:00–19:00 KST. Weekends are off. The peak countdown starts one hour before each period and uses `HH:MM:SS`; the pastel border is only shown during active peaks in TTY mode.
 
-### Herdr: live quota under Spaces
+### Herdr: live quota and resources under Spaces
 
-Inside Herdr, run **`opm q` from anywhere, including `~`**. The normal quota screen stays open; the calling Space also shows two compact rows (example values):
+Inside Herdr, run **`opm q` from anywhere, including `~`**. The normal quota screen stays open; the calling Space also shows quota and resource bars:
 
-![Herdr Spaces sidebar showing green CX and orange CC quota bars beside the OPM quota screen](docs/images/herdr-spaces-quota.png)
+```text
+CX 75% 2h14m · ▰▰▰▱
+CC* 38% 47m · ▰▰▱▱
+Disk / 850/930G · ▰▰▰▰
+RAM 24/64G · ▰▰▱▱
+GPU0 6.2/16G · ▰▰▱▱
+GPU1 1.4/8G · ▰▱▱▱
+```
 
-*Actual Herdr terminal capture using example quota data. No real account details are shown.*
+Example values. Text is grouped before the bar to fit Herdr's default sidebar, which inserts `·` between tokens. Longer disk paths/capacities may need a wider sidebar.
+
+**Choose what appears:** `opm` → **Herdr Sidebar Settings**, or **`opm settings`**, even without authentication or presets. Toggle CX, CC, Disk, RAM, GPU VRAM and warning colors; add/remove disk paths; select all GPUs or individual devices (saved by UUID); set GPU refresh to 2/5/10 seconds. Save applies user-wide to running `opm q` sessions within a few seconds; cancel changes nothing. Settings live separately in `~/.config/oauth-preset-manager/sidebar.json`, not the auth/preset config. Invalid settings are never overwritten; a running display retains its last valid settings.
+
+- **Disk/RAM/VRAM show used/total, with fullness bars.** `G` means GiB. Disk defaults to `/`; paths on the same filesystem share one row. Used disk space excludes genuinely free blocks, not just user-available space. The quota table's existing available-disk header is unchanged.
+- **Warning bars:** resource usage ≥80% is yellow, ≥90% red. CX/CC remaining ≤20% is yellow, ≤10% red. Labels stay unchanged. Disable warnings to retain normal bar colors.
+- RAM refreshes every 2s using Linux `MemTotal - MemAvailable`; OS fallback is marked `~`. Disk refreshes every 15s. NVIDIA VRAM defaults to 2s and queries all GPUs with one bounded `nvidia-smi` command, independently of OAuth. Missing NVIDIA tooling/devices hides GPU rows; a failed previously detected/selected device shows `N/A`, never stale usage or a fake zero. `GPU?` means a selected UUID has no known current index.
+- These are host RAM, filesystem and device-level NVIDIA VRAM measurements, not process or container limits. Overlay filesystems can differ from physical disks. AMD/Apple GPU metrics and MIG-instance breakdowns are not supported.
+- Turning items off clears their metadata and stops **sidebar-only** collection; regular quota-table queries are unchanged. Unused registered rows may remain in Herdr config, but have no visible text. Herdr allows 16 rows: user rows take priority, with an explicit overflow summary for remaining items. If no row is available, OPM warns rather than replacing user rows.
+
+![Earlier quota-only Herdr capture showing CX and CC bars](docs/images/herdr-spaces-quota.png)
+
+*Earlier quota-only capture with example data; the resource rows and compact text-first layout above are now also supported.*
 
 - **CX is green; CC is orange.** These are the active **native Codex and Claude Code file-backed accounts**, not a total of saved presets. The percentage is remaining quota; the time is until reset. Codex prefers a 5-hour window, falls back to its actual primary window, and labels weekly-only quotas `7d` (unknown windows: `quota`).
 - No Herdr rebuild, extra pane, workspace rename, or daemon. Herdr 0.8.2's workspace metadata and styled Space rows are used. Only the expanded desktop sidebar shows custom rows; collapsed/mobile layouts do not.
-- Quotas are fetched every 60 seconds; reset text and metadata lifetime update every 15 seconds. `r` / `ㄱ` also refreshes the sidebar, without bypassing HTTP 429 cooldown. Claude probes first and falls back to its last successful snapshot on failure: **`CC*` means cached**, not live. Without a usable snapshot, `login`, `expired`, `auth`, `429`, or `error` replaces unavailable percentages. The sidebar collector only performs usage GETs: it never refreshes tokens, rewrites auth, or sends inference requests.
-- Quit `opm q` to clear its two rows. Forced termination expires the last report within 45 seconds. With multiple `opm q` processes in one Space, one reports and a waiting process takes over within 15 seconds when it exits. Other Spaces are independent; a pane moved to a different Space is followed on the next update.
+- Quotas are fetched every 60 seconds; reset text updates independently and unchanged metadata gets a heartbeat at least every 15 seconds. `r` / `ㄱ` also refreshes the sidebar, without bypassing HTTP 429 cooldown. Claude probes first and falls back to its last successful snapshot on failure: **`CC*` means cached**, not live. Without a usable snapshot, `login`, `expired`, `auth`, `429`, or `error` replaces unavailable percentages. The sidebar collector only performs usage GETs: it never refreshes tokens, rewrites auth, or sends inference requests.
+- Quit `opm q` to clear all its sidebar rows. Forced termination expires the last report within 45 seconds. With multiple `opm q` processes in one Space, one reports and a waiting process takes over within 15 seconds when it exits. Other Spaces are independent; a pane moved to a different Space is followed on the next update.
 - First use backs up the original Herdr config beside it (`config.toml.opm-backup-*`), preserves existing keys/theme/Space rows and comments, validates the added rows, and reloads Herdr. `HERDR_CONFIG_PATH` is respected. Unsupported/invalid config is not overwritten; a sidebar warning does not stop the regular quota screen. Outside Herdr or when output is piped, nothing is installed or reported.
 
 References: [Herdr 0.8.2 sidebar configuration](https://herdr.dev/docs/0.8.2/configuration/), [workspace metadata](https://herdr.dev/docs/cli-reference/).
@@ -138,8 +157,9 @@ Common auth file locations:
 - `CCP_CONFIG_DIR`: claude-code-proxy root override; OPM writes `<root>/codex/auth.json`. Without it, Linux uses `${XDG_CONFIG_HOME:-~/.config}/claude-code-proxy`, macOS uses `~/.config/claude-code-proxy`, and Windows uses `%APPDATA%/claude-code-proxy` (the usual `~/AppData/Roaming` fallback when unset). Surrounding whitespace is trimmed; a nonempty override never silently falls back after a path error.
 - `OPM_ANTIGRAVITY_CLIENT_ID`: Required for Google/Antigravity quota refresh
 - `OPM_ANTIGRAVITY_CLIENT_SECRET`: Required for Google/Antigravity quota refresh
-- `OPENCODE_GO_WORKSPACE_ID`: OpenCode Go workspace ID (`wrk_...`) for `opm q` usage data
-- `OPENCODE_GO_AUTH_COOKIE`: `auth` cookie from `opencode.ai` for OpenCode Go usage data
+- `OPENCODE_GO_API_KEY`: Explicit Go usage API key override (otherwise uses `opencode-go` API credentials in the selected active auth file)
+- `OPENCODE_GO_WORKSPACE_ID`: Legacy cookie-only quota fallback workspace (`wrk_...`)
+- `OPENCODE_GO_AUTH_COOKIE`: Legacy fallback `auth` cookie; used only when no Go API key exists
 - `OPM_COMMAND_CODE_AUTH_PATH`: Optional Command Code credential path override
 - `CLAUDE_CONFIG_DIR`: Claude Code profile directory (default `~/.claude`)
 - `OPM_CLAUDE_AUTH_PATH`: Optional Claude Code `.credentials.json` path override; takes precedence over `CLAUDE_CONFIG_DIR`
@@ -190,11 +210,15 @@ OAuth token rotation **cannot be rolled back remotely**. Before requesting refre
 
 References: [CodexBar OAuth fetcher/schema](https://github.com/steipete/CodexBar/blob/170a4d41c6d69e2bb25daac4fb088a92de2f9bc4/Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift), [Headroom client](https://github.com/headroomlabs-ai/headroom/blob/e67b3c8a29443a60d6b0018fb22f525c5cd7e709/headroom/subscription/client.py), [Claude Code authentication](https://code.claude.com/docs/en/authentication).
 
-### OpenCode Go session
+### OpenCode Go quota and legacy session
 
-OpenCode Go usage is read from its workspace page and shows the 5-hour, weekly, and monthly windows. Its API key enables Go models, but the usage page currently requires the browser `auth` cookie as well.
+**An API key alone now supports quota queries.** OPM calls `GET https://opencode.ai/zen/go/v1/usage` with Bearer authentication and maps rolling (5-hour), weekly and monthly usage to remaining percentages and absolute reset times. HTTP 200 `rate-limited` windows remain valid quota data.
 
-You may store those two values in `~/.config/oauth-preset-manager/opencode-go.json` instead; environment variables take precedence. Keep this file private:
+`OPENCODE_GO_API_KEY` takes precedence; otherwise OPM reads `opencode-go: { "type": "api", "key": "..." }` from its selected active OpenCode auth file. It does not scan saved preset keys. A configured key's failure never falls back to a different cookie account: 401 means invalid key, 403 means no Go subscription for that key's user/workspace, and 429 respects Retry-After (five minutes without it, minimum one minute). Cooldown is in-memory and keyed by a hash, so switching keys does not reuse another account's result. No inference or credential rewrite is involved.
+
+Reference: [official Go usage endpoint](https://github.com/anomalyco/opencode/blob/d4704347465c1ee63d0c213ed00e648e7f0231c5/packages/console/app/src/routes/zen/go/v1/usage.ts).
+
+**Only without an API key**, the older workspace-page reader remains available using the two cookie environment variables, or `~/.config/oauth-preset-manager/opencode-go.json` (environment variables take precedence). Keep this file private:
 
 ```json
 {

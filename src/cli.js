@@ -13,6 +13,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { PresetManager, timeUntilReset } from './core.js';
 import { t } from './i18n.js';
 import { startHerdrQuota } from './herdr-quota.js';
+import { sidebarSettingsMenu } from './sidebar-menu.js';
 
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json');
@@ -249,6 +250,11 @@ export function buildInteractiveChoices(presets) {
       name: `  ${chalk.magenta('📊')} ${t('view_quota')}`,
       value: '__quota__',
       description: 'Check quota usage'
+    },
+    {
+      name: `  ⚙ ${t('sidebar_settings')}`,
+      value: '__sidebar__',
+      description: t('sidebar_settings_scope'),
     },
     {
       name: `  ${chalk.yellow('🧠')} ${t('openai_quota_kickoff')}`,
@@ -1230,8 +1236,8 @@ export async function cmdQuota(manager, options = {}) {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   let needsRender = true;
   let sidebarWarning;
-  const sidebar = (options.startHerdrQuota || startHerdrQuota)({ interactive, onWarning: () => {
-    sidebarWarning = t('quota_herdr_unavailable');
+  const sidebar = (options.startHerdrQuota || startHerdrQuota)({ interactive, configDir: manager.configDir, onWarning: reason => {
+    sidebarWarning = t(reason === 'overflow' ? 'quota_herdr_overflow' : 'quota_herdr_unavailable');
     needsRender = true;
   } });
   const onInterrupt = () => { void sidebar.stop().then(() => process.exit(130)); };
@@ -1381,12 +1387,7 @@ export async function runOpenAIKickoffInteractive(manager) {
   }
 }
 
-export async function interactiveMode(manager, prompts = { select, input, confirm }) {
-  const authPath = manager.getAuthPath();
-  if (!existsSync(authPath)) {
-    if (!(await setupAuthPath(manager))) return;
-  }
-
+export async function interactiveMode(manager, prompts = { select, input, confirm, checkbox }) {
   let mismatchPrompted = false;
 
   while (true) {
@@ -1413,18 +1414,9 @@ export async function interactiveMode(manager, prompts = { select, input, confir
     
     printInfoBox('📊 Status', statusItems);
 
-    if (!presets.length) {
-      console.log(chalk.yellow(`  ⚠ ${t('no_presets_found')}`));
-      const saveNew = await prompts.confirm({
-        message: chalk.cyan('  ' + t('save_current_as_preset')) 
-      });
-      if (saveNew) {
-        await savePresetInteractive(manager);
-      }
-      return;
-    }
+    if (!presets.length) console.log(chalk.yellow(`  ⚠ ${t('no_presets_found')}`));
 
-    if (!mismatchPrompted && current && detectedPreset !== current) {
+    if (existsSync(manager.getAuthPath()) && !mismatchPrompted && current && detectedPreset !== current) {
       const overwrite = await prompts.confirm({
         message: chalk.yellow('  ⚠️  ' + t('overwrite_current_preset', { 
           preset: current, 
@@ -1482,7 +1474,12 @@ export async function interactiveMode(manager, prompts = { select, input, confir
     }
 
     switch (selection) {
+      case '__sidebar__':
+        await sidebarSettingsMenu(manager.configDir, prompts);
+        await prompts.input({ message: chalk.dim('Press Enter to continue...') });
+        break;
       case '__save__':
+        if (!existsSync(manager.getAuthPath()) && !(await setupAuthPath(manager))) break;
         await savePresetInteractive(manager);
         await input({ message: chalk.dim('Press Enter to continue...') });
         break;
@@ -1520,6 +1517,10 @@ async function main() {
   const cleanupInput = !['q', 'quota'].includes(args[0]) ? enableEscToExit() : () => {};
   try {
     const manager = new PresetManager();
+    if (args[0] === 'settings') {
+      await sidebarSettingsMenu(manager.configDir);
+      return;
+    }
     await manager.init();
 
     if (!args.length) {
@@ -1561,6 +1562,7 @@ async function main() {
         console.log('    opm              ' + chalk.dim('# Interactive mode'));
         console.log('    opm save <name>  ' + chalk.dim('# Save current auth as preset'));
         console.log('    opm switch <name> ' + chalk.dim('# Switch to preset'));
+        console.log('    opm settings      ' + chalk.dim('# Herdr sidebar settings'));
         console.log('    opm quota         ' + chalk.dim('# Show OAuth quota'));
     }
   } finally {

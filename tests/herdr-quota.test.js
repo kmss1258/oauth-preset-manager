@@ -9,6 +9,8 @@ import TOML from '@iarna/toml';
 import stringWidth from 'string-width';
 import { addQuotaRows, acquireHerdrLock, ensureHerdrQuotaConfig, HERDR_QUOTA_TOKENS } from '../src/herdr-config.js';
 import { compactReset, formatHerdrQuota, startHerdrQuota } from '../src/herdr-quota.js';
+import { SystemMetrics } from '../src/system-metrics.js';
+import { SIDEBAR_DEFAULTS } from '../src/sidebar-settings.js';
 
 async function directory(t) {
   const home = await mkdtemp(join(tmpdir(), 'opm-herdr-'));
@@ -172,7 +174,10 @@ async function fixture(t) {
   const env = { HERDR_ENV: '1', HERDR_PANE_ID: 'wHome:p1', HERDR_WORKSPACE_ID: 'wrong-inherited-workspace',
     HERDR_SOCKET_PATH: socket, HERDR_CONFIG_PATH: config };
   const collector = { collect: async options => { fetches.push(options); return usage(now); } };
-  const options = { interactive: true, env, homeDir: home, run, collector, now: () => now, tickMs: 100000 };
+  const options = { interactive: true, env, homeDir: home, run, collector, now: () => now, tickMs: 100000,
+    settingsStore: { load: async () => ({ ...SIDEBAR_DEFAULTS, disk: false, ram: false, gpu: false }) },
+    metrics: new SystemMetrics({ disk: () => assert.fail('disk disabled'), ram: () => assert.fail('RAM disabled'), gpu: () => assert.fail('GPU disabled') }),
+  };
   const displays = [];
   t.after(async () => { for (const display of displays) await display.stop(); });
   return { home, calls, fetches, metadata, collector, env, options,
@@ -195,7 +200,7 @@ test('HOME use targets the caller Space, updates countdown without fetching and 
   const f = await fixture(t), display = f.start();
   await until(() => f.metadata.get('wHome')?.opm_cx?.value.includes('62%'));
   assert.equal(f.metadata.has('wrong-inherited-workspace'), false);
-  assert.deepEqual(f.fetches, [{ force: false }]);
+  assert.deepEqual(f.fetches, [{ force: false, providers: ['codex', 'claude'] }]);
   assert.ok(f.calls.filter(args => args[0] === 'pane').every(args => args.join(' ') === 'pane current --current'));
   const before = f.metadata.get('wHome').opm_cx.expires;
   f.advance(15_000); await display.tick();
@@ -204,7 +209,7 @@ test('HOME use targets the caller Space, updates countdown without fetching and 
   assert.equal(f.fetches.length, 1);
   display.refresh(true);
   await until(() => f.fetches.length === 2 && !display.pending);
-  assert.deepEqual(f.fetches[1], { force: true });
+  assert.deepEqual(f.fetches[1], { force: true, providers: ['codex', 'claude'] });
   f.advance(60_000); await display.tick();
   await until(() => f.fetches.length === 3 && !display.pending);
   await display.stop();
@@ -281,6 +286,60 @@ test('abnormal termination leaves only expiring metadata; no persistent daemon i
   const visible = Object.values(f.metadata.get('wHome')).filter(token => token.expires > f.options.now());
   assert.deepEqual(visible, []);
   assert.equal(f.calls.filter(args => args[0] === 'workspace').every(args => args[1] === 'report-metadata'), true);
+});
+
+test('resource updates batch <=16 patches and hot reload stops collectors and clears tokens', async t => {
+  const f = await fixture(t);
+  let settings = { ...SIDEBAR_DEFAULTS }, ramCalls = 0, gpuCalls = 0;
+  const metrics = new SystemMetrics({ now: f.options.now,
+    disk: async path => ({ path, status: 'ok', device: 1, used: 80, total: 100, percent: 80 }),
+    ram: async () => { ramCalls++; return { status: 'ok', used: 9, total: 10, percent: 90 }; },
+    gpu: async () => { gpuCalls++; return { status: 'ok', gpus: Array.from({ length: 8 }, (_, index) => ({ uuid: `GPU-${index}`, index, status: 'ok', used: 1, total: 10, percent: 10 })) }; },
+  });
+  const display = f.start({ metrics, settingsStore: { load: async () => settings } });
+  await until(() => Object.values(f.metadata.get('wHome') || {}).some(token => token.value.startsWith('GPU7')));
+  const reports = f.calls.filter(args => args[1] === 'report-metadata');
+  assert.ok(reports.length > 1);
+  for (const args of reports) assert.ok(args.filter(arg => ['--token', '--clear-token'].includes(arg)).length <= 16);
+  assert.equal(f.metadata.get('wHome').opm_metric_ram_critical.value, '▰▰▰▰');
+  const reloads = f.calls.filter(args => args[0] === 'server').length;
+  f.advance(2000); await display.tick(); await until(() => gpuCalls === 2 && !metrics.pending.gpu);
+  assert.equal(f.fetches.length, 1); assert.equal(f.calls.filter(args => args[0] === 'server').length, reloads);
+  settings = { ...settings, codex: false, claude: false, disk: false, ram: false, gpu: false };
+  await display.tick(); assert.deepEqual(f.metadata.get('wHome'), {});
+  const counts = [ramCalls, gpuCalls, f.fetches.length];
+  f.advance(60000); await display.tick(); assert.deepEqual([ramCalls, gpuCalls, f.fetches.length], counts);
+  await display.stop(); assert.deepEqual(f.metadata.get('wHome'), {});
+});
+
+test('slow OAuth never blocks resources; malformed settings retain last valid selection', async t => {
+  const f = await fixture(t);
+  let complete, malformed = false, warnings = 0;
+  const display = f.start({ onWarning: () => warnings++, collector: { collect: () => new Promise(resolve => { complete = resolve; }) },
+    settingsStore: { load: async () => { if (malformed) throw 0; return { ...SIDEBAR_DEFAULTS, disk: false, gpu: false }; } },
+    metrics: new SystemMetrics({ ram: async () => ({ status: 'ok', used: 1, total: 2, percent: 50 }) }),
+  });
+  await until(() => f.metadata.get('wHome')?.opm_metric_ram_normal?.value === '▰▰▱▱');
+  assert.ok(complete); malformed = true; await display.tick();
+  assert.equal(warnings, 1); assert.ok(f.metadata.get('wHome').opm_metric_ram_label);
+  await display.stop(); const calls = f.calls.length; complete(usage(f.options.now())); await display.pending;
+  assert.equal(f.calls.length, calls);
+});
+
+test('reporters with different GPU discovery states retain shared registered rows', async t => {
+  const f = await fixture(t);
+  const first = f.start({ settingsStore: { load: async () => ({ ...SIDEBAR_DEFAULTS, disk: false, ram: false }) },
+    metrics: new SystemMetrics({ gpu: async () => ({ status: 'ok', gpus: [{ uuid: 'GPU-one', index: 0, status: 'error' }] }) }),
+  });
+  await until(() => Object.values(f.metadata.get('wHome') || {}).some(token => token.value.startsWith('GPU0')));
+  const other = f.start({ run: async (args, env) => args[0] === 'pane'
+    ? JSON.stringify({ result: { pane: { workspace_id: 'wOther' } } }) : f.options.run(args, env) });
+  await until(() => f.metadata.get('wOther')?.opm_cx?.value.includes('62%'));
+  const reloads = f.calls.filter(args => args[0] === 'server').length;
+  for (let i = 0; i < 3; i++) { await first.tick(); await other.tick(); }
+  assert.equal(f.calls.filter(args => args[0] === 'server').length, reloads);
+  const config = TOML.parse(await readFile(f.env.HERDR_CONFIG_PATH, 'utf8'));
+  assert.ok(config.ui.sidebar.spaces.rows.some(row => row[0]?.token?.startsWith('$opm_metric_gpu_')));
 });
 
 test('installed Herdr validates generated config without touching the live configuration', {

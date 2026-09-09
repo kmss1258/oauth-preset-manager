@@ -90,8 +90,9 @@ export class ActiveQuotaCollector {
     this.now = now;
   }
 
-  async collect({ force = false } = {}) {
-    return Promise.all(['codex', 'claude'].map(provider => {
+  async collect({ force = false, providers = ['codex', 'claude'] } = {}) {
+    if (!Array.isArray(providers) || providers.some(provider => !['codex', 'claude'].includes(provider))) throw new Error('Invalid provider selection');
+    return Promise.all([...new Set(providers)].map(provider => {
       // Serialize each provider, not both: overlapping polls still reread credentials.
       const pending = (this.#pending.get(provider) || Promise.resolve()).then(() => this.#collect(provider, force));
       this.#pending.set(provider, pending.then(() => {}, () => {}));

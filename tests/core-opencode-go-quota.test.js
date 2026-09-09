@@ -6,6 +6,12 @@ import test from 'node:test';
 
 import { PresetManager } from '../src/core.js';
 
+function manager(directory) {
+  const instance = new PresetManager(directory);
+  instance.config = { auth_path: join(directory, 'auth.json') };
+  return instance;
+}
+
 test('collectOpenCodeGoQuota parses all OpenCode Go usage windows', async () => {
   const originalFetch = globalThis.fetch;
   const originalWorkspaceId = process.env.OPENCODE_GO_WORKSPACE_ID;
@@ -22,7 +28,7 @@ test('collectOpenCodeGoQuota parses all OpenCode Go usage windows', async () => 
   });
 
   try {
-    const [result] = await new PresetManager('/tmp/opm-unused-config').collectOpenCodeGoQuota();
+    const [result] = await manager('/tmp/opm-unused-config').collectOpenCodeGoQuota();
 
     assert.equal(result.provider, 'opencodego');
     assert.equal(result.account_id, 'wrk_test123');
@@ -64,7 +70,7 @@ test('collectOpenCodeGoQuota falls back to the local OPM credential config', asy
       };
     };
 
-    const [result] = await new PresetManager(configDir).collectOpenCodeGoQuota();
+    const [result] = await manager(configDir).collectOpenCodeGoQuota();
 
     assert.equal(result.account_id, 'wrk_config123');
     assert.equal(result.daily.percent_remaining, 90);
@@ -93,7 +99,7 @@ test('collectOpenCodeGoQuota ignores a symlinked global config without env overr
     await writeFile(realConfig, JSON.stringify({ workspaceId: 'wrk_symlink', authCookie: 'secret-cookie' }));
     await symlink(realConfig, join(configDir, 'opencode-go.json'));
     globalThis.fetch = async () => { calls += 1; throw new Error('must not fetch'); };
-    assert.deepEqual(await new PresetManager(configDir).collectOpenCodeGoQuota(), []);
+    assert.deepEqual(await manager(configDir).collectOpenCodeGoQuota(), []);
     assert.equal(calls, 0);
   } finally {
     globalThis.fetch = originalFetch;

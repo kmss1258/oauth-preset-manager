@@ -1,0 +1,80 @@
+import https from 'node:https';
+import { createHash } from 'node:crypto';
+import { t } from './i18n.js';
+
+export function parseGoUsage(data) {
+  const window = name => {
+    const row = data?.usage?.[name];
+    if (!row || !['ok', 'rate-limited'].includes(row.status)
+      || typeof row.percent !== 'number' || !Number.isFinite(row.percent) || row.percent < 0
+      || typeof row.resetsAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(row.resetsAt)
+      || !Number.isFinite(Date.parse(row.resetsAt))) throw new Error('Invalid Go usage');
+    return { percent_remaining: Math.round(Math.max(0, 100 - row.percent)),
+      reset_time_iso: new Date(row.resetsAt).toISOString() };
+  };
+  const daily = window('rolling'), weekly = window('weekly'), monthly = window('monthly');
+  return { daily, weekly, monthly_percent: monthly.percent_remaining, monthly_reset_iso: monthly.reset_time_iso };
+}
+
+function requestUsage(key) {
+  return new Promise((resolve, reject) => {
+    const request = https.request('https://opencode.ai/zen/go/v1/usage', {
+      method: 'GET', headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+      timeout: 10000, signal: AbortSignal.timeout(10000),
+    }, response => {
+      response.on('error', () => reject(new Error('Go response failed')));
+      response.on('aborted', () => reject(new Error('Go response aborted')));
+      if (response.statusCode !== 200) {
+        reject({ statusCode: response.statusCode, retryAfter: response.headers['retry-after'] });
+        response.destroy(); return;
+      }
+      const chunks = [];
+      let size = 0;
+      response.on('data', chunk => {
+        size += chunk.length;
+        if (size > 1024 * 1024) { reject(new Error('Go response too large')); response.destroy(); return; }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+        catch { reject(new Error('Invalid Go response')); }
+      });
+    });
+    request.on('error', () => reject(new Error('Go request failed')));
+    request.on('timeout', () => { reject(new Error('Go timeout')); request.destroy(); });
+    request.end();
+  });
+}
+
+export class GoQuota {
+  constructor({ request = requestUsage, now = Date.now } = {}) {
+    this.request = request; this.now = now;
+    this.cooldown = new Map(); this.pending = new Map();
+  }
+
+  async collect(key) {
+    const base = { provider: 'opencodego', account_id: 'OpenCode Go', presets: ['(Current Active)'],
+      daily: null, weekly: null, monthly_percent: null, monthly_reset_iso: null };
+    if (typeof key !== 'string' || !key || /[\s\x00-\x1f\x7f-\x9f]/.test(key)) return [{ ...base, error: t('quota_go_auth') }];
+    const id = createHash('sha256').update(key).digest('hex');
+    if (this.pending.has(id)) return structuredClone(await this.pending.get(id));
+    const pending = (async () => {
+      if ((this.cooldown.get(id) || 0) > this.now()) return [{ ...base, error: t('quota_go_rate_limited') }];
+      try { return [{ ...base, ...parseGoUsage(await this.request(key)), error: null }]; }
+      catch (error) {
+        const status = error?.statusCode;
+        if (status === 429) {
+          const retry = error.retryAfter;
+          const delay = typeof retry === 'string' && /^\d+(\.\d+)?$/.test(retry.trim())
+            ? Number(retry) * 1000 : typeof retry === 'string' ? Date.parse(retry) - this.now() : NaN;
+          for (const [key, until] of this.cooldown) if (until <= this.now()) this.cooldown.delete(key);
+          this.cooldown.set(id, this.now() + Math.max(60000, Number.isFinite(delay) ? delay : 300000));
+        }
+        return [{ ...base, error: t(status === 401 ? 'quota_go_auth' : status === 403 ? 'quota_go_entitlement'
+          : status === 429 ? 'quota_go_rate_limited' : 'quota_go_failed') }];
+      }
+    })();
+    this.pending.set(id, pending);
+    try { return await pending; } finally { this.pending.delete(id); }
+  }
+}

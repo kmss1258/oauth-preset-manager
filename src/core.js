@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { t } from './i18n.js';
 import { queryClaudeQuota } from './claude-quota-cache.js';
+import { GoQuota } from './opencode-go-quota.js';
 import { assertIdentity, checkCodexFileStore, entryIdentity, getCodexAuthPath, getProxyCodexAuthPath, matchesNative, nativeFromEntry, openAIExpires,
   parseAuth, parseNative, pathsOverlap, privateDir, readBytes, refreshedEntry, safePath,
   selectOpenAI, syncError, proxyAuthFromEntry, writeBytesAtomic } from './codex.js';
@@ -159,6 +160,7 @@ export class PresetManager {
     this.lastOpenAIRefreshResults = [];
     this._requestJson = httpsRequest;
     this._claudeQuotaCache = new Map();
+    this._goQuota = new GoQuota();
   }
 
   async init() {
@@ -1291,6 +1293,19 @@ export class PresetManager {
   }
 
   async collectOpenCodeGoQuota() {
+    let key = env.OPENCODE_GO_API_KEY;
+    if (key == null) {
+      try {
+        const bytes = await readBytes(this.getAuthPath());
+        const auth = bytes ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) : {};
+        if (!isPlainObject(auth)) throw new Error('Invalid auth object');
+        if (auth['opencode-go']?.type === 'api') key = auth['opencode-go'].key ?? '';
+      } catch {
+        return [{ provider: 'opencodego', account_id: 'OpenCode Go', error: t('quota_go_failed') }];
+      }
+    }
+    // A configured key never silently falls back to a different cookie account.
+    if (key != null) return this._goQuota.collect(key);
     const { workspaceId, authCookie } = await this._getOpenCodeGoCredentials();
     if (!workspaceId || !authCookie) return [];
 
