@@ -34,7 +34,7 @@ export function startHerdrQuota({ interactive = Boolean(process.stdin.isTTY && p
   run = herdrRunner(env), collector, metrics, settingsStore,
   now = Date.now, onWarning = idle, tickMs = TICK_MS, ttlMs = TTL_MS } = {}) {
   if (!interactive || env.HERDR_ENV !== '1' || !env.HERDR_PANE_ID || !env.HERDR_SOCKET_PATH) {
-    return { ready: Promise.resolve(), refresh: idle, stop: async () => {} };
+    return { ready: Promise.resolve(), refresh: idle, setGoResult: idle, stop: async () => {} };
   }
   return new HerdrQuotaDisplay({ env, homeDir, configDir, run, collector: collector || new ActiveQuotaCollector({ homeDir }),
     metrics: metrics || new SystemMetrics({ now }), settingsStore: settingsStore || new SidebarSettings(configDir),
@@ -118,7 +118,7 @@ class HerdrQuotaDisplay {
   async publish() {
     if (this.stopped || !this.unlock) return;
     const source = (await readBytes(this.configPath))?.toString('utf8') || '';
-    const view = buildSidebarView(this.settings, this.rows, this.metrics.values, this.now(), sidebarRowBudget(source));
+    const view = buildSidebarView(this.settings, this.rows, this.metrics.values, this.now(), sidebarRowBudget(source), this.goResult);
     if (view.overflow) this.warn('overflow');
     await this.configure(registeredSidebarRows(source, view.rows), source);
     if (this.stopped) return;
@@ -152,6 +152,19 @@ class HerdrQuotaDisplay {
       batch.push(...group);
     }
     await send();
+  }
+
+  setGoResult(result) {
+    if (this.stopped || this.disabled) return;
+    // Reuse the table's snapshot, retaining no account metadata or upstream errors.
+    const percent = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    this.goResult = result ? { daily: { percent_remaining: percent(result.daily?.percent_remaining) },
+      monthly_percent: percent(result.monthly_percent), error: Boolean(result.error) } : null;
+    return this.ready.then(() => this.serialize(async () => {
+      if (this.stopped || this.disabled) return;
+      await this.syncWorkspace();
+      await this.publish();
+    }));
   }
 
   pollMetrics(force = false) {

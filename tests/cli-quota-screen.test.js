@@ -498,7 +498,9 @@ test('interactive loop handles ticks, resizing, paging, Google toggle, refresh a
   Object.assign(stdout, { isTTY: true, columns: 120, rows: 24, write(text) { writes.push(text); return true; } });
   let fetches = 0;
   let failRefresh = false;
-  const manager = { async collectAllQuota() { fetches++; if (failRefresh) throw new Error('temporary failure'); return results; }, async cacheQuotaResults() {} };
+  let failCache = false;
+  const manager = { async collectAllQuota() { fetches++; if (failRefresh) throw new Error('temporary failure'); return results; },
+    async cacheQuotaResults() { if (failCache) throw new Error('cache failure'); } };
   const waitFor = async predicate => {
     for (let i = 0; i < 300; i++) {
       if (predicate()) return;
@@ -508,10 +510,12 @@ test('interactive loop handles ticks, resizing, paging, Google toggle, refresh a
   };
   let running;
   const sidebarCalls = [];
+  const goSnapshots = [];
   const options = { startHerdrQuota: ({ interactive }) => {
     assert.equal(interactive, true);
     sidebarCalls.push('start');
-    return { refresh: force => sidebarCalls.push(force), stop: async () => { sidebarCalls.push('stop'); } };
+    return { refresh: force => sidebarCalls.push(force), setGoResult: result => goSnapshots.push(structuredClone(result)),
+      stop: async () => { sidebarCalls.push('stop'); } };
   } };
   try {
     Object.defineProperty(process, 'stdin', { value: stdin, configurable: true });
@@ -527,17 +531,21 @@ test('interactive loop handles ticks, resizing, paging, Google toggle, refresh a
       assert.ok(writes.at(-1).startsWith('\x1b[H\x1b[2J'));
       assert.equal(fetches, 1, 'resize must not fetch');
     }
+    failCache = true;
     for (const key of ['j', 'k', 'g', 'ㄱ']) {
       const previous = writes.length;
       stdin.emit('data', Buffer.from(key));
       await waitFor(() => writes.length > previous && stdin.listenerCount('data') === 1);
     }
     assert.equal(fetches, 2);
+    const go = results.find(result => result.provider === 'opencodego');
+    assert.deepEqual(goSnapshots, [go, go], 'Go reuses each collected result, even when cache persistence fails');
     failRefresh = true;
     stdin.emit('data', Buffer.from('r'));
     await waitFor(() => writes.at(-1).includes('Refresh failed') && stdin.listenerCount('data') === 1);
     assert.match(writes.at(-1), /OpenAI|openai/);
     assert.equal(fetches, 3);
+    assert.deepEqual(goSnapshots, [go, go, { error: true }]);
     stdin.emit('data', Buffer.from('\x03'));
     await running;
     assert.equal(writes.at(-1), '\x1b[?25h\x1b[?1049l');

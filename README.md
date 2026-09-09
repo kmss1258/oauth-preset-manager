@@ -106,6 +106,7 @@ Inside Herdr, run **`opm q` from anywhere, including `~`**. The normal quota scr
 ```text
 CX ▰▰▰▱ 75% 2h14m
 CC* ▰▰▱▱ 38% 47m
+Go 5h▰▰100% M▰▱29%
 Disk / ▰▰▰▰ 850/930G
 RAM ▰▰▱▱ 24/64G
 GPU0 ▰▰▱▱ 6.2/16G
@@ -114,10 +115,11 @@ GPU1 ▰▱▱▱ 1.4/8G
 
 Example values. Rows use `label [window] bar percent/capacity [reset]` with single spaces and no bullet separators. Each row uses one visible token to avoid Herdr 0.8.2's fixed inter-token `·`; warning colors therefore apply to the entire row. Longer disk paths/capacities may need a wider sidebar.
 
-**Choose what appears:** `opm` → **Herdr Sidebar Settings**, or **`opm settings`**, even without authentication or presets. Toggle CX, CC, Disk, RAM, GPU VRAM and warning colors; add/remove disk paths; select all GPUs or individual devices (saved by UUID); set GPU refresh to 2/5/10 seconds. Save applies user-wide to running `opm q` sessions within a few seconds; cancel changes nothing. Settings live separately in `~/.config/oauth-preset-manager/sidebar.json`, not the auth/preset config. Invalid settings are never overwritten; a running display retains its last valid settings.
+**Choose what appears:** `opm` → **Herdr Sidebar Settings**, or **`opm settings`**, even without authentication or presets. Toggle CX, CC, Go, Disk, RAM, GPU VRAM and warning colors; add/remove disk paths; select all GPUs or individual devices (saved by UUID); set GPU refresh to 2/5/10 seconds. Save applies user-wide to running `opm q` sessions within a few seconds; cancel changes nothing. Settings live separately in `~/.config/oauth-preset-manager/sidebar.json`, not the auth/preset config. Invalid settings are never overwritten; a running display retains its last valid settings.
 
+- **Go fits 5h and monthly remaining quota on one row.** `5h` is the rolling window; `M` is monthly, each with a two-cell bar and remaining %. It reuses the quota table's result every 60s / manual `r`, with no extra API request or credential read. `Go …` is loading, `N/A` means missing data, and `Go error` replaces failed results. A missing individual window shows `N/A`; the worst available remaining percentage controls row warnings. Toggle Go independently in `opm settings`.
 - **Disk/RAM/VRAM show used/total, with fullness bars.** `G` means GiB. Disk defaults to `/`; paths on the same filesystem share one row. Used disk space excludes genuinely free blocks, not just user-available space. The quota table's existing available-disk header is unchanged.
-- **Warning colors:** resource usage ≥80% is yellow, ≥90% red. CX/CC remaining ≤20% is yellow, ≤10% red. The whole row changes color; disabling warnings retains its normal color.
+- **Warning colors:** resource usage ≥80% is yellow, ≥90% red. CX/CC/Go remaining ≤20% is yellow, ≤10% red. The whole row changes color; disabling warnings retains its normal color.
 - RAM refreshes every 2s using Linux `MemTotal - MemAvailable`; OS fallback is marked `~`. Disk refreshes every 15s. NVIDIA VRAM defaults to 2s and queries all GPUs with one bounded `nvidia-smi` command, independently of OAuth. Missing NVIDIA tooling/devices hides GPU rows; a failed previously detected/selected device shows `N/A`, never stale usage or a fake zero. `GPU?` means a selected UUID has no known current index.
 - These are host RAM, filesystem and device-level NVIDIA VRAM measurements, not process or container limits. Overlay filesystems can differ from physical disks. AMD/Apple GPU metrics and MIG-instance breakdowns are not supported.
 - Turning items off clears their metadata and stops **sidebar-only** collection; regular quota-table queries are unchanged. Unused registered rows may remain in Herdr config, but have no visible text. Herdr allows 16 rows: user rows take priority, with an explicit overflow summary for remaining items. If no row is available, OPM warns rather than replacing user rows.

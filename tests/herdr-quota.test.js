@@ -175,7 +175,7 @@ async function fixture(t) {
     HERDR_SOCKET_PATH: socket, HERDR_CONFIG_PATH: config };
   const collector = { collect: async options => { fetches.push(options); return usage(now); } };
   const options = { interactive: true, env, homeDir: home, run, collector, now: () => now, tickMs: 100000,
-    settingsStore: { load: async () => ({ ...SIDEBAR_DEFAULTS, disk: false, ram: false, gpu: false }) },
+    settingsStore: { load: async () => ({ ...SIDEBAR_DEFAULTS, go: false, disk: false, ram: false, gpu: false }) },
     metrics: new SystemMetrics({ disk: () => assert.fail('disk disabled'), ram: () => assert.fail('RAM disabled'), gpu: () => assert.fail('GPU disabled') }),
   };
   const displays = [];
@@ -191,7 +191,7 @@ test('outside Herdr, non-TTY, or missing caller context performs no I/O', async 
   for (const extra of [{ interactive: false }, { env: {} }, { env: { HERDR_ENV: '1' } }]) {
     const display = startHerdrQuota({ interactive: true, env: { HERDR_ENV: '1', HERDR_PANE_ID: 'p1', HERDR_SOCKET_PATH: '/no/socket' },
       homeDir: home, run: () => assert.fail('no subprocess'), collector: { collect: () => assert.fail('no network') }, ...extra });
-    await display.ready; display.refresh(); await display.stop();
+    await display.ready; display.refresh(); display.setGoResult({ monthly_percent: 29 }); await display.stop();
   }
   assert.deepEqual(await readdir(home), []);
 });
@@ -305,7 +305,7 @@ test('resource updates batch <=16 patches and hot reload stops collectors and cl
   const reloads = f.calls.filter(args => args[0] === 'server').length;
   f.advance(2000); await display.tick(); await until(() => gpuCalls === 2 && !metrics.pending.gpu);
   assert.equal(f.fetches.length, 1); assert.equal(f.calls.filter(args => args[0] === 'server').length, reloads);
-  settings = { ...settings, codex: false, claude: false, disk: false, ram: false, gpu: false };
+  settings = { ...settings, codex: false, claude: false, go: false, disk: false, ram: false, gpu: false };
   await display.tick(); assert.deepEqual(f.metadata.get('wHome'), {});
   const counts = [ramCalls, gpuCalls, f.fetches.length];
   f.advance(60000); await display.tick(); assert.deepEqual([ramCalls, gpuCalls, f.fetches.length], counts);
@@ -340,6 +340,40 @@ test('reporters with different GPU discovery states retain shared registered row
   assert.equal(f.calls.filter(args => args[0] === 'server').length, reloads);
   const config = TOML.parse(await readFile(f.env.HERDR_CONFIG_PATH, 'utf8'));
   assert.ok(config.ui.sidebar.spaces.rows.some(row => row[0]?.token?.startsWith('$opm_metric_gpu_')));
+});
+
+test('Go reuses table snapshots before readiness, through toggles and ownership transfer without fetching', async t => {
+  const f = await fixture(t);
+  let settings = { ...SIDEBAR_DEFAULTS, codex: false, claude: false, disk: false, ram: false, gpu: false };
+  const extra = { settingsStore: { load: async () => settings } };
+  const first = f.start(extra);
+  const result = { daily: { percent_remaining: 100 }, monthly_percent: 29, account_id: 'private-account' };
+  await first.setGoResult(result);
+  result.monthly_percent = 0;
+  assert.equal(f.metadata.get('wHome').opm_metric_go_label.value, 'Go 5h▰▰100% M▰▱29%');
+  assert.ok(!JSON.stringify(first.goResult).includes('private-account'));
+  assert.equal(f.fetches.length, 0);
+  const second = f.start(extra); await second.ready;
+  await second.setGoResult({ daily: { percent_remaining: 75 }, monthly_percent: 20 });
+  assert.equal(f.metadata.get('wHome').opm_metric_go_label.value, 'Go 5h▰▰100% M▰▱29%');
+  await first.stop(); await second.tick();
+  assert.equal(f.metadata.get('wHome').opm_metric_go_warning.value, 'Go 5h▰▰75% M▱▱20%');
+  settings = { ...settings, go: false }; await second.tick();
+  assert.deepEqual(f.metadata.get('wHome'), {});
+  await second.setGoResult({ daily: { percent_remaining: 100 }, monthly_percent: 10 });
+  assert.deepEqual(f.metadata.get('wHome'), {});
+  settings = { ...settings, go: true }; await second.tick();
+  assert.equal(f.metadata.get('wHome').opm_metric_go_critical.value, 'Go 5h▰▰100% M▱▱10%');
+  await second.setGoResult({ error: 'private-error', ...result });
+  assert.equal(f.metadata.get('wHome').opm_metric_go_label.value, 'Go error');
+  assert.equal(f.metadata.get('wHome').opm_metric_go_critical.value, '');
+  assert.ok(!JSON.stringify(second.goResult).includes('private-error'));
+  await second.setGoResult(undefined);
+  assert.equal(f.metadata.get('wHome').opm_metric_go_label.value, 'Go N/A');
+  assert.equal(f.fetches.length, 0);
+  await second.stop(); const count = f.calls.length;
+  await second.setGoResult(result);
+  assert.equal(f.calls.length, count); assert.deepEqual(f.metadata.get('wHome'), {});
 });
 
 test('installed Herdr validates generated config without touching the live configuration', {

@@ -1257,7 +1257,9 @@ export async function cmdQuota(manager, options = {}) {
     let deadline;
     let warning;
     const refresh = async () => {
-      results = await manager.collectAllQuota();
+      try { results = await manager.collectAllQuota(); }
+      catch (error) { sidebar.setGoResult?.({ error: true }); throw error; }
+      sidebar.setGoResult?.(results.find(result => result.provider === 'opencodego'));
       deadline = Date.now() + QUOTA_REFRESH_INTERVAL_MS;
       warning = null;
       try { await manager.cacheQuotaResults(results); }

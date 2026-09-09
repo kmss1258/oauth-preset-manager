@@ -29,14 +29,32 @@ export function warningLevel(percent, remaining = false, enabled = true) {
   return used >= 90 ? 'critical' : used >= 80 ? 'warning' : 'normal';
 }
 
-const colors = { cx: '#10A37F', cc: '#D87555', disk: '#4890CD', ram: '#4890CD', gpu: '#4890CD', more: '#A89984' };
+export function formatGoQuota(result) {
+  if (result === undefined) return { value: '…', percent: null };
+  if (result === null) return { value: 'N/A', percent: null };
+  if (result.error) return { value: 'error', percent: null };
+  const remaining = value => typeof value === 'number' && Number.isFinite(value)
+    ? Math.round(Math.max(0, Math.min(100, value))) : null;
+  const fiveHour = remaining(result.daily?.percent_remaining);
+  const monthly = remaining(result.monthly_percent);
+  const values = [fiveHour, monthly].filter(value => value !== null);
+  if (!values.length) return { value: 'N/A', percent: null };
+  const window = (label, percent) => {
+    if (percent === null) return `${label}N/A`;
+    const filled = Math.round(percent / 50);
+    return `${label}${'▰'.repeat(filled)}${'▱'.repeat(2 - filled)}${percent}%`;
+  };
+  return { value: `${window('5h', fiveHour)} ${window('M', monthly)}`, percent: Math.min(...values) };
+}
+
+const colors = { cx: '#10A37F', cc: '#D87555', go: '#4890CD', disk: '#4890CD', ram: '#4890CD', gpu: '#4890CD', more: '#A89984' };
 const key = (id, part) => `opm_metric_${id}_${part}`;
 
-function viewRow({ id, label, value, percent = null, remaining = false, color }, warnings) {
+function viewRow({ id, label, value, percent = null, remaining = false, color, showBar = true }, warnings) {
   const tone = warningLevel(percent, remaining, warnings);
   const width = Math.max(1, Math.min(4, 22 - stringWidth(`${label} ${value}`) - 1));
   const filled = Number.isFinite(percent) ? Math.round(Math.max(0, Math.min(100, percent)) / 100 * width) : null;
-  const bar = filled === null ? '' : '▰'.repeat(filled) + '▱'.repeat(width - filled);
+  const bar = !showBar || filled === null ? '' : '▰'.repeat(filled) + '▱'.repeat(width - filled);
   const text = [label, bar, value].filter(Boolean).join(' ');
   return { id,
     config: [
@@ -51,7 +69,7 @@ function viewRow({ id, label, value, percent = null, remaining = false, color },
   };
 }
 
-export function buildSidebarView(settings, quota, metrics, now = Date.now(), budget = 14) {
+export function buildSidebarView(settings, quota, metrics, now = Date.now(), budget = 14, goResult) {
   const items = [];
   const legacy = {};
   for (const [provider, id] of [['codex', 'cx'], ['claude', 'cc']]) {
@@ -65,6 +83,7 @@ export function buildSidebarView(settings, quota, metrics, now = Date.now(), bud
     items.push({ id, label: label + window, color: colors[id], remaining: true, percent: ok ? row.percent : null,
       value: ok ? `${Math.round(row.percent)}% ${compactReset(row.resetAt, now)}` : full.slice(label.length).trim() });
   }
+  if (settings.go) items.push({ id: 'go', label: 'Go', color: colors.go, remaining: true, showBar: false, ...formatGoQuota(goResult) });
   const metric = (id, label, row, color) => items.push({ id, label, color,
     percent: row?.status === 'ok' ? row.percent : null,
     value: row?.status === 'ok' ? `${row.approximate ? '~' : ''}${formatGiB(row.used)}/${formatGiB(row.total)}G` : row?.status === 'loading' ? '…' : 'N/A' });

@@ -11,7 +11,7 @@ export async function sidebarSettingsMenu(directory, prompts = { select, input, 
   try { settings = await store.load(); }
   catch { console.log(t('sidebar_config_error')); return; }
   console.log(t('sidebar_settings_scope'));
-  const fields = ['codex', 'claude', 'disk', 'ram', 'gpu', 'warnings'];
+  const fields = ['codex', 'claude', 'go', 'disk', 'ram', 'gpu', 'warnings'];
   while (true) {
     const action = await prompts.select({ message: t('sidebar_settings'), choices: [
       { name: t('sidebar_items'), value: 'items' },

@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { readBytes, writeBytesAtomic } from './codex.js';
 
 export const SIDEBAR_DEFAULTS = {
-  version: 1, codex: true, claude: true, disk: true, ram: true, gpu: true, warnings: true,
+  version: 1, codex: true, claude: true, go: true, disk: true, ram: true, gpu: true, warnings: true,
   diskPaths: ['/'], gpuIds: null, gpuInterval: 2,
 };
 
@@ -11,7 +11,7 @@ export function normalizeSidebarSettings(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid sidebar settings');
   const result = { ...structuredClone(SIDEBAR_DEFAULTS), ...value };
   if (Object.keys(value).some(key => !Object.hasOwn(SIDEBAR_DEFAULTS, key)) || result.version !== 1) throw new Error('Invalid sidebar settings');
-  for (const key of ['codex', 'claude', 'disk', 'ram', 'gpu', 'warnings']) {
+  for (const key of ['codex', 'claude', 'go', 'disk', 'ram', 'gpu', 'warnings']) {
     if (typeof result[key] !== 'boolean') throw new Error('Invalid sidebar toggle');
   }
   if (!Array.isArray(result.diskPaths) || result.diskPaths.length > 16

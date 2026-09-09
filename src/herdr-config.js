@@ -79,7 +79,16 @@ export function registeredSidebarRows(source, requestedRows) {
   });
   const rows = new Map(existing.map(row => [row[0]?.token ?? row[0], row]));
   for (const row of requestedRows) rows.set(row[0]?.token ?? row[0], row);
-  return rows.size <= sidebarRowBudget(source) ? [...rows.values()] : requestedRows;
+  if (rows.size > sidebarRowBudget(source)) return requestedRows;
+  const registered = [...rows.values()];
+  const go = rows.get('$opm_metric_go_label');
+  if (go) {
+    registered.splice(registered.indexOf(go), 1);
+    const quotaEnd = registered.reduce((last, row, index) =>
+      ['$opm_metric_cx_label', '$opm_metric_cc_label'].includes(row[0]?.token) ? index + 1 : last, 0);
+    registered.splice(quotaEnd, 0, go);
+  }
+  return registered;
 }
 
 export function setSidebarRows(source, requestedRows) {

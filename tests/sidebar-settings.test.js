@@ -42,11 +42,11 @@ test('settings reject invalid versions, types, paths and refresh rates', () => {
 test('settings menu saves selected fields, disk paths, UUID and interval; cancel writes nothing', async t => {
   const path = await directory(t), store = new SidebarSettings(path);
   const actions = ['items', 'disks', 'gpus', 'pick', 'interval', 5, 'save'];
-  const selections = [['disk', 'ram', 'gpu', 'warnings'], ['/'], ['GPU-bbb']];
+  const selections = [['go', 'disk', 'ram', 'gpu', 'warnings'], ['/'], ['GPU-bbb']];
   await sidebarSettingsMenu(path, { select: async () => actions.shift(), checkbox: async () => selections.shift(), input: async () => '/data' },
     { gpuUsage: async () => ({ status: 'ok', gpus: [{ index: 1, uuid: 'GPU-bbb', name: 'RTX', total: 8 * 1024 ** 3 }] }) });
   const saved = await store.load();
-  assert.equal(saved.codex, false); assert.equal(saved.claude, false); assert.equal(saved.ram, true);
+  assert.equal(saved.codex, false); assert.equal(saved.claude, false); assert.equal(saved.go, true); assert.equal(saved.ram, true);
   assert.deepEqual(saved.diskPaths, ['/', '/data']); assert.deepEqual(saved.gpuIds, ['GPU-bbb']); assert.equal(saved.gpuInterval, 5);
   const before = await readFile(store.path);
   const cancel = ['items', 'cancel'];
