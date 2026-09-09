@@ -64,7 +64,7 @@ test('interactive opm exposes sidebar settings without auth or presets', async t
   assert.equal(selections.length, 0);
 });
 
-test('warning boundaries and capacity bars keep labels while changing only bars', () => {
+test('warning boundaries and single-token rows preserve bar-first order without bullets', () => {
   for (const [used, level] of [[79.9, 'normal'], [80, 'warning'], [89.9, 'warning'], [90, 'critical'], [100, 'critical']]) {
     assert.equal(warningLevel(used), level); assert.equal(warningLevel(100 - used, true), level);
     assert.equal(warningLevel(used, false, false), 'normal');
@@ -74,12 +74,18 @@ test('warning boundaries and capacity bars keep labels while changing only bars'
     ram: { status: 'ok', used: 24 * 1024 ** 3, total: 64 * 1024 ** 3, percent: 37.5 },
     gpus: [{ uuid: 'GPU-aaa', index: 0, status: 'ok', used: 6 * 1024 ** 3, total: 16 * 1024 ** 3, percent: 37.5 }],
   });
-  assert.equal(view.tokens.opm_metric_disk_0_label, 'Disk / 850/930G');
-  assert.equal(view.tokens.opm_metric_disk_0_critical, '▰▰▰▰');
-  assert.equal(view.tokens.opm_metric_disk_0_normal, '');
-  assert.equal(view.tokens.opm_metric_cx_critical, '▱▱▱▱');
+  assert.equal(view.tokens.opm_metric_disk_0_label, '');
+  assert.equal(view.tokens.opm_metric_disk_0_critical, 'Disk / ▰▰▰▰ 850/930G');
+  assert.equal(view.tokens.opm_metric_disk_0_warning, '');
+  assert.equal(view.tokens.opm_metric_cx_critical, 'CX ▱▱▱▱ 10% reset');
   assert.equal(view.rows[0][0].fg, '#10A37F');
-  assert.ok(Object.values(view.tokens).includes('GPU0 6/16G'));
+  assert.ok(Object.values(view.tokens).includes('GPU0 ▰▰▱▱ 6/16G'));
+  for (const row of view.rows) {
+    const visible = row.map(part => view.tokens[part.token.slice(1)]).filter(Boolean);
+    assert.equal(visible.length, 1);
+    assert.ok(!visible[0].includes('·'));
+    assert.ok(!visible[0].includes('  '));
+  }
   assert.ok(Object.keys(view.tokens).every(key => key.length <= 32));
   assert.ok(Object.values(view.tokens).every(value => value.length <= 80 && !value.includes('\x1b')));
 });

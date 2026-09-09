@@ -698,7 +698,7 @@ export function formatCommandCodeAccountCell(result) {
   return usage ? `${account}\n${chalk.dim(usage)}` : account;
 }
 
-function formatCommandCodeError(error, width) {
+function formatQuotaError(error, width) {
   const clean = fitQuotaLine(stripAnsi(String(error)), Infinity).replace(/\s+/g, ' ').trim();
   const text = clean.replace(/^Command Code API error:\s*(?=\S)/, '');
   if (stringWidth(text) <= width) return [chalk.red(text)];
@@ -1153,7 +1153,7 @@ export function buildQuotaFrame(results, options = {}) {
       }
       const percentOptions = result.provider === 'opencodego' ? OPENCODE_GO_PERCENT_OPTIONS
         : result.provider === 'commandcode' ? COMMAND_CODE_PERCENT_OPTIONS : { rainbow: isRainbowQuotaEligible(result) };
-      const details = (result.provider === 'commandcode' ? [] : windows(result).slice(2)).map(([label, window]) => {
+      const details = (result.provider === 'commandcode' || (result.provider === 'opencodego' && result.error) ? [] : windows(result).slice(2)).map(([label, window]) => {
         const bar = formatPercent(window?.percent_remaining, { ...percentOptions,
           width: Math.min(10, accountWidth - stringWidth(label) - 6) });
         const line = `${label} ${bar}`;
@@ -1162,7 +1162,7 @@ export function buildQuotaFrame(results, options = {}) {
       });
       table.push([
         emphasize(result, result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider),
-        result.error ? (result.provider === 'commandcode' ? formatCommandCodeError(result.error, 16).join('\n') : chalk.red(result.error)) : formatPercent(result.daily?.percent_remaining, percentOptions),
+        result.error ? (['commandcode', 'opencodego'].includes(result.provider) ? formatQuotaError(result.error, 16).join('\n') : chalk.red(result.error)) : formatPercent(result.daily?.percent_remaining, percentOptions),
         formatReset(result.daily?.reset_time_iso), formatPercent(result.weekly?.percent_remaining, percentOptions),
         formatReset(result.weekly?.reset_time_iso), [account(result), ...details].join('\n').split('\n').map((line, index) =>
           index === 0 ? emphasize(result, fitQuotaLine(line, accountWidth)) : fitQuotaLine(line, accountWidth)).join('\n'),
@@ -1175,7 +1175,7 @@ export function buildQuotaFrame(results, options = {}) {
       const provider = { openai: 'OpenAI', claude: 'Claude', opencodego: 'OpenCode Go', commandcode: 'Command Code', google: 'Google' }[result.provider] || result.provider;
       body.push(chalk.cyan.bold(emphasize(result, `● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`)));
       body.push(...account(result).split('\n').map((line, index) => chalk.yellow(index === 0 ? emphasize(result, line) : line)));
-      if (result.error) body.push(...(result.provider === 'commandcode' ? formatCommandCodeError(result.error, width) : [chalk.red(result.error)]));
+      if (result.error) body.push(...(['commandcode', 'opencodego'].includes(result.provider) ? formatQuotaError(result.error, width) : [chalk.red(result.error)]));
       else for (const [label, window] of windows(result)) {
         if (!window) continue;
         const shortLabel = fitQuotaLine(label, Math.max(2, Math.min(8, width - 9))).padEnd(2);

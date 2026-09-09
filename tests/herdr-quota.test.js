@@ -301,7 +301,7 @@ test('resource updates batch <=16 patches and hot reload stops collectors and cl
   const reports = f.calls.filter(args => args[1] === 'report-metadata');
   assert.ok(reports.length > 1);
   for (const args of reports) assert.ok(args.filter(arg => ['--token', '--clear-token'].includes(arg)).length <= 16);
-  assert.equal(f.metadata.get('wHome').opm_metric_ram_critical.value, '▰▰▰▰');
+  assert.match(f.metadata.get('wHome').opm_metric_ram_critical.value, /^RAM ▰▰▰▰ /);
   const reloads = f.calls.filter(args => args[0] === 'server').length;
   f.advance(2000); await display.tick(); await until(() => gpuCalls === 2 && !metrics.pending.gpu);
   assert.equal(f.fetches.length, 1); assert.equal(f.calls.filter(args => args[0] === 'server').length, reloads);
@@ -319,7 +319,7 @@ test('slow OAuth never blocks resources; malformed settings retain last valid se
     settingsStore: { load: async () => { if (malformed) throw 0; return { ...SIDEBAR_DEFAULTS, disk: false, gpu: false }; } },
     metrics: new SystemMetrics({ ram: async () => ({ status: 'ok', used: 1, total: 2, percent: 50 }) }),
   });
-  await until(() => f.metadata.get('wHome')?.opm_metric_ram_normal?.value === '▰▰▱▱');
+  await until(() => f.metadata.get('wHome')?.opm_metric_ram_label?.value.startsWith('RAM ▰▰▱▱ '));
   assert.ok(complete); malformed = true; await display.tick();
   assert.equal(warnings, 1); assert.ok(f.metadata.get('wHome').opm_metric_ram_label);
   await display.stop(); const calls = f.calls.length; complete(usage(f.options.now())); await display.pending;

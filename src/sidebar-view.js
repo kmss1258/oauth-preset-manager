@@ -34,21 +34,20 @@ const key = (id, part) => `opm_metric_${id}_${part}`;
 
 function viewRow({ id, label, value, percent = null, remaining = false, color }, warnings) {
   const tone = warningLevel(percent, remaining, warnings);
-  const text = `${label} ${value}`.trim();
-  const width = Math.max(1, Math.min(4, 22 - stringWidth(text) - 3));
+  const width = Math.max(1, Math.min(4, 22 - stringWidth(`${label} ${value}`) - 1));
   const filled = Number.isFinite(percent) ? Math.round(Math.max(0, Math.min(100, percent)) / 100 * width) : null;
   const bar = filled === null ? '' : '▰'.repeat(filled) + '▱'.repeat(width - filled);
+  const text = [label, bar, value].filter(Boolean).join(' ');
   return { id,
     config: [
-      { token: '$' + key(id, 'label'), ...(['cx', 'cc'].includes(id) ? { fg: color } : {}) },
-      { token: '$' + key(id, 'normal'), fg: color },
+      { token: '$' + key(id, 'label'), fg: color },
       { token: '$' + key(id, 'warning'), fg: '#FABD2F' },
       { token: '$' + key(id, 'critical'), fg: '#FB4934' },
     ],
-    // Herdr inserts " · " between nonempty tokens. Group text so capacities fit
-    // its default sidebar width, and change only the separate bar's warning color.
-    tokens: { [key(id, 'label')]: text,
-      ...Object.fromEntries(['normal', 'warning', 'critical'].map(level => [key(id, level), tone === level ? bar : ''])) },
+    // Exactly one full-row token is visible: Herdr cannot insert its fixed " · "
+    // separator. Warning colors therefore apply to the whole row.
+    tokens: { [key(id, 'label')]: tone === 'normal' ? text : '',
+      ...Object.fromEntries(['warning', 'critical'].map(level => [key(id, level), tone === level ? text : ''])) },
   };
 }
 
@@ -62,8 +61,9 @@ export function buildSidebarView(settings, quota, metrics, now = Date.now(), bud
     legacy[`opm_${id}`] = full;
     const ok = ['ok', 'cached'].includes(row.status) && Number.isFinite(row.percent);
     const label = (id === 'cx' ? 'CX' : 'CC') + (row.status === 'cached' ? '*' : '');
-    items.push({ id, label, color: colors[id], remaining: true, percent: ok ? row.percent : null,
-      value: ok ? `${row.window && row.window !== '5h' ? row.window + ' ' : ''}${Math.round(row.percent)}% ${compactReset(row.resetAt, now)}` : full.slice(label.length).trim() });
+    const window = ok && ['7d', '24h', 'quota'].includes(row.window) ? ` ${row.window}` : '';
+    items.push({ id, label: label + window, color: colors[id], remaining: true, percent: ok ? row.percent : null,
+      value: ok ? `${Math.round(row.percent)}% ${compactReset(row.resetAt, now)}` : full.slice(label.length).trim() });
   }
   const metric = (id, label, row, color) => items.push({ id, label, color,
     percent: row?.status === 'ok' ? row.percent : null,

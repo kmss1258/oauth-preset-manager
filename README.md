@@ -103,29 +103,29 @@ opm q
 Inside Herdr, run **`opm q` from anywhere, including `~`**. The normal quota screen stays open; the calling Space also shows quota and resource bars:
 
 ```text
-CX 75% 2h14m · ▰▰▰▱
-CC* 38% 47m · ▰▰▱▱
-Disk / 850/930G · ▰▰▰▰
-RAM 24/64G · ▰▰▱▱
-GPU0 6.2/16G · ▰▰▱▱
-GPU1 1.4/8G · ▰▱▱▱
+CX ▰▰▰▱ 75% 2h14m
+CC* ▰▰▱▱ 38% 47m
+Disk / ▰▰▰▰ 850/930G
+RAM ▰▰▱▱ 24/64G
+GPU0 ▰▰▱▱ 6.2/16G
+GPU1 ▰▱▱▱ 1.4/8G
 ```
 
-Example values. Text is grouped before the bar to fit Herdr's default sidebar, which inserts `·` between tokens. Longer disk paths/capacities may need a wider sidebar.
+Example values. Rows use `label [window] bar percent/capacity [reset]` with single spaces and no bullet separators. Each row uses one visible token to avoid Herdr 0.8.2's fixed inter-token `·`; warning colors therefore apply to the entire row. Longer disk paths/capacities may need a wider sidebar.
 
 **Choose what appears:** `opm` → **Herdr Sidebar Settings**, or **`opm settings`**, even without authentication or presets. Toggle CX, CC, Disk, RAM, GPU VRAM and warning colors; add/remove disk paths; select all GPUs or individual devices (saved by UUID); set GPU refresh to 2/5/10 seconds. Save applies user-wide to running `opm q` sessions within a few seconds; cancel changes nothing. Settings live separately in `~/.config/oauth-preset-manager/sidebar.json`, not the auth/preset config. Invalid settings are never overwritten; a running display retains its last valid settings.
 
 - **Disk/RAM/VRAM show used/total, with fullness bars.** `G` means GiB. Disk defaults to `/`; paths on the same filesystem share one row. Used disk space excludes genuinely free blocks, not just user-available space. The quota table's existing available-disk header is unchanged.
-- **Warning bars:** resource usage ≥80% is yellow, ≥90% red. CX/CC remaining ≤20% is yellow, ≤10% red. Labels stay unchanged. Disable warnings to retain normal bar colors.
+- **Warning colors:** resource usage ≥80% is yellow, ≥90% red. CX/CC remaining ≤20% is yellow, ≤10% red. The whole row changes color; disabling warnings retains its normal color.
 - RAM refreshes every 2s using Linux `MemTotal - MemAvailable`; OS fallback is marked `~`. Disk refreshes every 15s. NVIDIA VRAM defaults to 2s and queries all GPUs with one bounded `nvidia-smi` command, independently of OAuth. Missing NVIDIA tooling/devices hides GPU rows; a failed previously detected/selected device shows `N/A`, never stale usage or a fake zero. `GPU?` means a selected UUID has no known current index.
 - These are host RAM, filesystem and device-level NVIDIA VRAM measurements, not process or container limits. Overlay filesystems can differ from physical disks. AMD/Apple GPU metrics and MIG-instance breakdowns are not supported.
 - Turning items off clears their metadata and stops **sidebar-only** collection; regular quota-table queries are unchanged. Unused registered rows may remain in Herdr config, but have no visible text. Herdr allows 16 rows: user rows take priority, with an explicit overflow summary for remaining items. If no row is available, OPM warns rather than replacing user rows.
 
 ![Earlier quota-only Herdr capture showing CX and CC bars](docs/images/herdr-spaces-quota.png)
 
-*Earlier quota-only capture with example data; the resource rows and compact text-first layout above are now also supported.*
+*Earlier quota-only capture with example data; the resource rows and bar-first layout above are now also supported.*
 
-- **CX is green; CC is orange.** These are the active **native Codex and Claude Code file-backed accounts**, not a total of saved presets. The percentage is remaining quota; the time is until reset. Codex prefers a 5-hour window, falls back to its actual primary window, and labels weekly-only quotas `7d` (unknown windows: `quota`).
+- **In their normal state, CX is green and CC is orange.** These are the active **native Codex and Claude Code file-backed accounts**, not a total of saved presets. The percentage is remaining quota; the time is until reset. Codex prefers a 5-hour window, falls back to its actual primary window, and labels weekly-only quotas `7d` (unknown windows: `quota`).
 - No Herdr rebuild, extra pane, workspace rename, or daemon. Herdr 0.8.2's workspace metadata and styled Space rows are used. Only the expanded desktop sidebar shows custom rows; collapsed/mobile layouts do not.
 - Quotas are fetched every 60 seconds; reset text updates independently and unchanged metadata gets a heartbeat at least every 15 seconds. `r` / `ㄱ` also refreshes the sidebar, without bypassing HTTP 429 cooldown. Claude probes first and falls back to its last successful snapshot on failure: **`CC*` means cached**, not live. Without a usable snapshot, `login`, `expired`, `auth`, `429`, or `error` replaces unavailable percentages. The sidebar collector only performs usage GETs: it never refreshes tokens, rewrites auth, or sends inference requests.
 - Quit `opm q` to clear all its sidebar rows. Forced termination expires the last report within 45 seconds. With multiple `opm q` processes in one Space, one reports and a waiting process takes over within 15 seconds when it exits. Other Spaces are independent; a pane moved to a different Space is followed on the next update.
@@ -215,6 +215,8 @@ References: [CodexBar OAuth fetcher/schema](https://github.com/steipete/CodexBar
 **An API key alone now supports quota queries.** OPM calls `GET https://opencode.ai/zen/go/v1/usage` with Bearer authentication and maps rolling (5-hour), weekly and monthly usage to remaining percentages and absolute reset times. HTTP 200 `rate-limited` windows remain valid quota data.
 
 `OPENCODE_GO_API_KEY` takes precedence; otherwise OPM reads `opencode-go: { "type": "api", "key": "..." }` from its selected active OpenCode auth file. It does not scan saved preset keys. A configured key's failure never falls back to a different cookie account: 401 means invalid key, 403 means no Go subscription for that key's user/workspace, and 429 respects Retry-After (five minutes without it, minimum one minute). Cooldown is in-memory and keyed by a hash, so switching keys does not reuse another account's result. No inference or credential rewrite is involved.
+
+Go usage errors occupy at most two lines in the quota table. **A usage 403 does not prove inference is unavailable:** the usage endpoint requires a Go subscription for the key's user/workspace, while inference can use other billing paths such as prepaid balance or another subscription. Conversely, inference can fail separately with `CreditsError`. OPM does not send inference requests merely to collect quota.
 
 Reference: [official Go usage endpoint](https://github.com/anomalyco/opencode/blob/d4704347465c1ee63d0c213ed00e648e7f0231c5/packages/console/app/src/routes/zen/go/v1/usage.ts).
 
