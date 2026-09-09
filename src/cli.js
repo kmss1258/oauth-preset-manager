@@ -521,9 +521,10 @@ function gradientColorAt(index, total) {
   );
 }
 
-function proGradientBar(text) {
+function proGradientBar(text, filledLength) {
   return Array.from(text).map((char, index, chars) => {
-    const { r, g, b } = gradientColorAt(index, chars.length);
+    const color = gradientColorAt(index, chars.length);
+    const { r, g, b } = index < filledLength ? color : blendColor(color, { r: 96, g: 96, b: 104 }, 0.35);
     return `\x1b[38;2;${r};${g};${b}m${char}\x1b[39m`;
   }).join('');
 }
@@ -549,16 +550,16 @@ export function formatPercent(value, options = {}) {
   const emptyLen = width - filledLen;
   const filled = '█'.repeat(filledLen);
 
-  const barFilled = shouldRenderProGradient(options.rainbow) && filled
-    ? proGradientBar(filled)
-    : (options.fillColor || chalk.green)(filled);
-  const barEmpty = chalk.gray('░'.repeat(emptyLen));
+  const empty = '░'.repeat(emptyLen);
+  const bar = shouldRenderProGradient(options.rainbow)
+    ? proGradientBar(filled + empty, filledLen)
+    : (options.fillColor || chalk.green)(filled) + chalk.gray(empty);
 
   let color = chalk.green;
   if (value < 20) color = chalk.red;
   else if (value < 50) color = chalk.yellow;
 
-  return `${barFilled}${barEmpty} ${color(value.toString().padStart(3) + '%')}`;
+  return `${bar} ${color(value.toString().padStart(3) + '%')}`;
 }
 
 function formatPercentTwoLine(value) {

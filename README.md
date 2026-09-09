@@ -33,7 +33,7 @@ opm
 - **Instant Switching**: Swap `auth.json` configurations with a single command.
 - **Quota View**: View quota usage for OpenAI, Claude OAuth, Google (Antigravity), OpenCode Go, and Command Code.
   - Supports detailed breakdown for Antigravity models (Flash, Pro, Claude).
-  - Visual progress bars and reset timers.
+  - Visual progress bars and reset timers. OpenAI Pro/Pro Lite accounts confirmed by live usage keep a rainbow across the entire bar: bright `█` means remaining quota; muted rainbow `░` means spent quota, including at 0%. Plain/non-color output keeps the distinct glyphs without the gradient.
   - Account cells show at most two preset labels, newest `last_used` first (falling back to `created_at`; unknown dates come last). Command Code account details use at most two lines. This only limits display, not quota collection or account rows.
   - Mobile/narrow terminals use compact account rows with adaptive bars. At 100+ columns, the full table is shown. Window resizing updates the layout without fetching again.
   - Short screens are paginated: `j`/`k`, down/up arrows, or Page Down/Page Up. The countdown stays fixed; `g` toggles Google details, and `q`, Esc, Enter, or Ctrl-C exits. Interactive mode restores the previous terminal screen on exit.

@@ -3,7 +3,7 @@ import test from 'node:test';
 import chalk from 'chalk';
 import stringWidth from 'string-width';
 import stripAnsi from 'strip-ansi';
-import { buildQuotaFrame, fitQuotaCell } from '../src/cli.js';
+import { buildQuotaFrame, fitQuotaCell, formatPercent } from '../src/cli.js';
 
 const quota = { percent_remaining: 75, reset_time_iso: '2099-09-07T12:00:00Z' };
 
@@ -79,4 +79,30 @@ test('an active-only first account keeps two content lines even in a very wide t
     }
     assert.deepEqual(items, original);
   } finally { chalk.level = oldLevel; }
+});
+
+const marks = text => [...text.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m([█░])\x1b\[39m/g)]
+  .map(([, r, g, b, glyph]) => ({ rgb: [Number(r), Number(g), Number(b)], glyph }));
+
+test('spent Pro quota keeps a muted rainbow, distinct from remaining quota even at zero', () => {
+  for (const width of [1, 4, 10, 14]) {
+    const full = formatPercent(100, { rainbow: 'force', width });
+    const spent = formatPercent(0, { rainbow: 'force', width });
+    const partial = formatPercent(50, { rainbow: 'force', width });
+    const bright = marks(full), muted = marks(spent), mixed = marks(partial);
+    assert.equal(bright.length, width); assert.equal(muted.length, width); assert.equal(mixed.length, width);
+    assert.ok(bright.every(mark => mark.glyph === '█'));
+    assert.ok(muted.every(mark => mark.glyph === '░'));
+    assert.equal(stripAnsi(spent), '░'.repeat(width) + '   0%');
+    assert.equal(stripAnsi(partial), stripAnsi(formatPercent(50, { width })));
+    for (let index = 0; index < width; index++) {
+      assert.notDeepEqual(bright[index].rgb, muted[index].rgb);
+      const spread = rgb => Math.max(...rgb) - Math.min(...rgb);
+      assert.ok(spread(muted[index].rgb) < spread(bright[index].rgb));
+      assert.deepEqual(mixed[index], index < Math.round(width / 2) ? bright[index] : muted[index]);
+    }
+    if (width >= 4) assert.ok(new Set(muted.map(mark => mark.rgb.join(','))).size >= 3);
+    assert.equal(stringWidth(full), width + 5); assert.equal(stringWidth(spent), width + 5);
+  }
+  assert.equal(marks(formatPercent(0)).length, 0, 'Non-Pro style is unchanged');
 });
