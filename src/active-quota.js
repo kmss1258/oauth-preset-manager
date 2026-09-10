@@ -154,7 +154,7 @@ export class ActiveQuotaCollector {
       || (provider === 'codex' && token.startsWith('sk-'))) return result('missing');
 
     const exp = tokenClaims(token)?.exp;
-    const expires = provider === 'claude' ? entry.expiresAt : null;
+    const expires = provider === 'claude' ? entry?.expiresAt : null;
     const expiries = [exp == null ? null : (typeof exp === 'number' ? exp * 1000 : NaN), expires];
     if (expiries.some(value => value != null && (typeof value !== 'number' || !Number.isFinite(value)))) return result('error');
     const expired = expiries.some(value => value != null && value <= this.now());

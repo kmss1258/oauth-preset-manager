@@ -1862,7 +1862,9 @@ export class PresetManager {
     const access = typeof accessToken === 'string' && accessToken.trim() ? accessToken.trim() : null;
     const refresh = typeof refreshToken === 'string' && refreshToken.trim() ? refreshToken.trim() : null;
     const credential = refresh || access;
-    const base = { provider: 'google', account_id: projectId || 'unknown', daily: null, weekly: null, error: null };
+    const base = { provider: 'google',
+    account_id: typeof projectId === 'string' && projectId.trim() ? projectId.trim() : 'unknown',
+    daily: null, weekly: null, error: null };
     if (!credential || /[\s\x00-\x1f\x7f-\x9f]/.test(credential)
       || (projectId != null && (typeof projectId !== 'string' || /[\s\x00-\x1f\x7f-\x9f]/.test(projectId)))) {
       return [{ ...base, error: 'Google authentication unavailable' }];
@@ -2074,8 +2076,10 @@ function normalizeOpenAIUsage(data, now = Date.now()) {
 }
 
 function resetTimeIsoFromSeconds(resetAtSeconds) {
-  if (typeof resetAtSeconds !== 'number' || !Number.isFinite(resetAtSeconds) || resetAtSeconds <= 0) return null;
-  let seconds = resetAtSeconds;
+  const numeric = typeof resetAtSeconds === 'number' ? resetAtSeconds
+    : typeof resetAtSeconds === 'string' && resetAtSeconds.trim() ? Number(resetAtSeconds) : NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  let seconds = numeric;
   if (seconds > 100000000000) {
     seconds /= 1000;
   }
