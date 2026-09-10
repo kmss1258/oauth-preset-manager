@@ -171,3 +171,24 @@ test('manager reloads persisted quota cache on init', async () => {
     await rm(configDir, { recursive: true, force: true });
   }
 });
+
+test('cacheQuotaResults does not treat a provider snapshot fallback as a new success', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-quota-cache-'));
+  try {
+    const manager = new PresetManager(configDir);
+    await manager.init();
+    await manager.cacheQuotaResults([{
+      provider: 'openai', account_id: 'acct-1', daily: { percent_remaining: 42 },
+      weekly: { percent_remaining: 77 }, error: null, presets: ['alpha'],
+    }], '2026-04-16T10:00:00.000Z');
+    await manager.cacheQuotaResults([{
+      provider: 'openai', account_id: 'acct-1', daily: { percent_remaining: 42 },
+      weekly: { percent_remaining: 77 }, error: null, cached: true, cache_error: 'error', presets: ['alpha'],
+    }], '2026-04-16T11:00:00.000Z');
+    assert.equal(manager.quotaCache.presets.alpha.last_success_at, '2026-04-16T10:00:00.000Z');
+    assert.equal(manager.quotaCache.presets.alpha.last_attempt_at, '2026-04-16T11:00:00.000Z');
+    assert.equal(manager.quotaCache.presets.alpha.last_error, 'error');
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});

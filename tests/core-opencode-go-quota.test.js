@@ -13,6 +13,7 @@ function manager(directory) {
 }
 
 test('collectOpenCodeGoQuota parses all OpenCode Go usage windows', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-go-live-'));
   const originalFetch = globalThis.fetch;
   const originalWorkspaceId = process.env.OPENCODE_GO_WORKSPACE_ID;
   const originalAuthCookie = process.env.OPENCODE_GO_AUTH_COOKIE;
@@ -28,7 +29,7 @@ test('collectOpenCodeGoQuota parses all OpenCode Go usage windows', async () => 
   });
 
   try {
-    const [result] = await manager('/tmp/opm-unused-config').collectOpenCodeGoQuota();
+    const [result] = await manager(configDir).collectOpenCodeGoQuota();
 
     assert.equal(result.provider, 'opencodego');
     assert.equal(result.account_id, 'wrk_test123');
@@ -44,6 +45,7 @@ test('collectOpenCodeGoQuota parses all OpenCode Go usage windows', async () => 
     else process.env.OPENCODE_GO_WORKSPACE_ID = originalWorkspaceId;
     if (originalAuthCookie === undefined) delete process.env.OPENCODE_GO_AUTH_COOKIE;
     else process.env.OPENCODE_GO_AUTH_COOKIE = originalAuthCookie;
+    await rm(configDir, { recursive: true, force: true });
   }
 });
 
@@ -101,6 +103,46 @@ test('collectOpenCodeGoQuota ignores a symlinked global config without env overr
     globalThis.fetch = async () => { calls += 1; throw new Error('must not fetch'); };
     assert.deepEqual(await manager(configDir).collectOpenCodeGoQuota(), []);
     assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWorkspaceId === undefined) delete process.env.OPENCODE_GO_WORKSPACE_ID;
+    else process.env.OPENCODE_GO_WORKSPACE_ID = originalWorkspaceId;
+    if (originalAuthCookie === undefined) delete process.env.OPENCODE_GO_AUTH_COOKIE;
+    else process.env.OPENCODE_GO_AUTH_COOKIE = originalAuthCookie;
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('legacy OpenCode Go uses a credential/workspace-bound persisted fallback', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-go-cookie-cache-'));
+  const originalFetch = globalThis.fetch;
+  const originalWorkspaceId = process.env.OPENCODE_GO_WORKSPACE_ID;
+  const originalAuthCookie = process.env.OPENCODE_GO_AUTH_COOKIE;
+  process.env.OPENCODE_GO_WORKSPACE_ID = 'wrk_cache';
+  process.env.OPENCODE_GO_AUTH_COOKIE = 'cookie_cache';
+  let failed = false;
+  try {
+    globalThis.fetch = async () => {
+      if (failed) throw new Error('private response');
+      return { ok: true, headers: { get: () => null }, text: async () =>
+        'rollingUsage:$R[1]={usagePercent:20,resetInSec:1800}monthlyUsage:$R[2]={usagePercent:0,resetInSec:3600}' };
+    };
+    const first = (await manager(configDir).collectOpenCodeGoQuota())[0];
+    assert.equal(first.daily.percent_remaining, 80);
+    failed = true;
+    const cached = (await manager(configDir).collectOpenCodeGoQuota())[0];
+    assert.equal(cached.cached, true);
+    assert.equal(cached.daily.percent_remaining, 80);
+    assert.equal(cached.error, null);
+
+    const restarted = (await manager(configDir).collectOpenCodeGoQuota())[0];
+    assert.equal(restarted.cached, true);
+    assert.equal(restarted.monthly_percent, 100);
+
+    process.env.OPENCODE_GO_WORKSPACE_ID = 'wrk_other';
+    const other = (await manager(configDir).collectOpenCodeGoQuota())[0];
+    assert.equal(other.daily, null);
+    assert.ok(other.error);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalWorkspaceId === undefined) delete process.env.OPENCODE_GO_WORKSPACE_ID;

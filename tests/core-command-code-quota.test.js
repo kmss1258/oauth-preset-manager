@@ -58,3 +58,48 @@ test('collectCommandCodeQuota reads oauth.json and parses rolling windows', asyn
     await rm(configDir, { recursive: true, force: true });
   }
 });
+
+test('Command Code uses a complete persisted snapshot after detail failures', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'opm-command-code-cache-home-'));
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-command-code-cache-config-'));
+  const authPath = join(home, '.commandcode', 'auth.json');
+  const originalPath = process.env.OPM_COMMAND_CODE_AUTH_PATH;
+  process.env.OPM_COMMAND_CODE_AUTH_PATH = authPath;
+  try {
+    await mkdir(join(home, '.commandcode'), { recursive: true });
+    await writeFile(authPath, JSON.stringify({ apiKey: 'user_cache-key' }), { mode: 0o600 });
+    let mode = 'success';
+    const manager = new PresetManager(configDir);
+    manager.now = () => 1_800_000_000_000;
+    manager._requestJson = async url => {
+      if (url.endsWith('/whoami')) return { org: { id: 'org_cache' }, user: { userName: 'tester' } };
+      if (mode === 'failure') throw Object.assign(new Error('private detail'), { statusCode: 503 });
+      if (url.includes('/billing/subscriptions')) return { data: { currentPeriodEnd: '2099-01-01T00:00:00.000Z' } };
+      if (url.includes('/usage/summary')) return { totalCost: 1, totalCount: 2, totalTokens: 3 };
+      return { credits: { monthlyCredits: 10, purchasedCredits: 2, freeCredits: 1 },
+        windowLimits: { fiveHour: { used: 2, cap: 10, resetAt: 1_900_000_000_000 }, weekly: { used: 5, cap: 20, resetAt: 1_900_000_000_000 } } };
+    };
+    const live = (await manager.collectCommandCodeQuota())[0];
+    assert.equal(live.command_code_usage.total_tokens, 3);
+    mode = 'failure';
+    const cached = (await manager.collectCommandCodeQuota())[0];
+    assert.equal(cached.cached, true);
+    assert.equal(cached.command_code_usage.total_tokens, 3);
+    assert.equal(cached.error, null);
+
+    const restarted = new PresetManager(configDir);
+    restarted.now = manager.now;
+    restarted._requestJson = async url => {
+      if (url.endsWith('/whoami')) return { org: { id: 'org_cache' }, user: { userName: 'tester' } };
+      throw Object.assign(new Error('private detail'), { statusCode: 503 });
+    };
+    const afterRestart = (await restarted.collectCommandCodeQuota())[0];
+    assert.equal(afterRestart.cached, true);
+    assert.equal(afterRestart.command_code_usage.total_tokens, 3);
+  } finally {
+    if (originalPath === undefined) delete process.env.OPM_COMMAND_CODE_AUTH_PATH;
+    else process.env.OPM_COMMAND_CODE_AUTH_PATH = originalPath;
+    await rm(home, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  }
+});

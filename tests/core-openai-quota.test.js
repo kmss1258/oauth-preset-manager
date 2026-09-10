@@ -210,3 +210,50 @@ test('collectAllQuota reports preset refresh failures without overwriting creden
     await rm(configDir, { recursive: true, force: true });
   }
 });
+
+test('OpenAI quota probes first, persists credential/context-bound fallback, and recovers', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'opm-openai-cache-'));
+  try {
+    const manager = new PresetManager(configDir);
+    let now = 1_800_000_000_000;
+    manager.now = () => now;
+    let mode = 'success';
+    let calls = 0;
+    const access = makeJwt({ 'https://api.openai.com/auth': { chatgpt_account_id: 'shared-account' } });
+    manager._requestJson = async () => {
+      calls++;
+      if (mode === 'failure') throw Object.assign(new Error('private response'), { statusCode: 503 });
+      return { plan_type: 'pro', rate_limit: {
+        primary_window: { used_percent: 25, reset_at: (now + 3_600_000) / 1000 },
+        secondary_window: { used_percent: 50, reset_at: (now + 7_200_000) / 1000 },
+      } };
+    };
+
+    const live = await manager._fetchOpenAIQuotaForToken(access, now + 60_000, 'shared-account');
+    assert.equal(live.daily.percent_remaining, 75);
+    mode = 'failure'; now += 1_000;
+    const cached = await manager._fetchOpenAIQuotaForToken(access, now + 60_000, 'shared-account');
+    assert.equal(cached.cached, true);
+    assert.equal(cached.daily.percent_remaining, 75);
+    assert.equal(cached.error, null);
+    assert.equal(calls, 2);
+
+    const restarted = new PresetManager(configDir);
+    restarted.now = () => now;
+    restarted._requestJson = async () => { throw Object.assign(new Error('private response'), { statusCode: 503 }); };
+    const afterRestart = await restarted._fetchOpenAIQuotaForToken(access, now + 60_000, 'shared-account');
+    assert.equal(afterRestart.cached, true);
+    assert.equal(afterRestart.daily.percent_remaining, 75);
+
+    const otherAccount = await restarted._fetchOpenAIQuotaForToken(access, now + 60_000, 'different-account');
+    assert.equal(otherAccount.daily, null);
+    assert.equal(otherAccount.error, 'OpenAI usage unavailable');
+
+    const expired = await restarted._fetchOpenAIQuotaForToken(access, now - 1, 'shared-account');
+    assert.equal(expired.cached, true);
+    assert.equal(expired.daily.percent_remaining, 75);
+    assert.equal(expired.error, null);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});

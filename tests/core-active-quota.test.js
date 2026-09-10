@@ -60,7 +60,7 @@ test('fixed native-only results, read-only files, parallel GETs, cache and rotat
   assert.deepEqual(first, expected);
   first[0].percent = 0;
   assert.deepEqual(await f.collector.collect(), expected);
-  assert.equal(f.calls.length, 3);
+  assert.equal(f.calls.length, 4);
   for (const { options, timeout } of f.calls) {
     assert.equal(options.method, 'GET'); assert.equal(timeout, 10000);
     assert.ok(options.signal instanceof AbortSignal); assert.equal(options.body, undefined);
@@ -68,11 +68,11 @@ test('fixed native-only results, read-only files, parallel GETs, cache and rotat
   assert.equal(f.calls.find(call => call.url.includes('chatgpt')).options.headers['ChatGPT-Account-Id'], 'synthetic-account');
   assert.deepEqual(await Promise.all(Object.values(f.paths).map(path => readFile(path))), before);
   await f.save('codex', { account_id: 'rotated-account' });
-  await f.collector.collect(); assert.equal(f.calls.length, 5);
-  f.advance(60000); await f.collector.collect(); assert.equal(f.calls.length, 7);
+  await f.collector.collect(); assert.equal(f.calls.length, 6);
+  f.advance(60000); await f.collector.collect(); assert.equal(f.calls.length, 8);
   await rm(f.paths.codex);
   assert.deepEqual((await f.collector.collect())[0], row('codex', 'missing'));
-  assert.deepEqual((await readdir(join(f.homeDir, '.config', 'oauth-preset-manager'))).sort(), ['claude-quota-cache', 'presets']);
+  assert.deepEqual((await readdir(join(f.homeDir, '.config', 'oauth-preset-manager'))).sort(), ['claude-quota-cache', 'codex-quota-cache', 'presets']);
 });
 
 test('unsafe, malformed and oversized credential files fail closed for both providers', async t => {
@@ -153,7 +153,7 @@ test('failure results are redacted, invalidate old percentages and isolate provi
     f.collector._requestJson = async () => { throw Object.assign(new Error('secret provider response'), { statusCode }); };
     assert.deepEqual(await f.collector.collect(), [row('codex', statusCode === 401 || statusCode === 403 ? 'unauthorized' : 'error'),
       { ...row('claude', 'ok', 59), status: 'cached', cachedAt: f.now(),
-        cacheError: statusCode === 401 ? 'expired' : statusCode === 403 ? 'unauthorized' : 'error' }]);
+        cacheError: statusCode === 401 ? 'unauthorized' : statusCode === 403 ? 'unauthorized' : 'error' }]);
   }
 });
 
@@ -174,10 +174,22 @@ test('window selection, malformed usage and finite bounds never infer a full quo
   for (const [rate_limit, percent, window = 'quota'] of cases) {
     f.advance(60000);
     f.collector._requestJson = async url => url.includes('chatgpt') ? { rate_limit } : { seven_day: { utilization: 50 } };
-    assert.deepEqual(await f.collector.collect(), [row('codex', percent === null ? 'error' : 'ok', percent, window), row('claude', 'error')]);
+    const [codex, claude] = await f.collector.collect();
+    if (percent === null) {
+      assert.equal(codex.status, 'cached');
+      assert.equal(codex.percent, 91);
+      assert.equal(codex.window, '7d');
+      assert.equal(codex.cacheError, 'error');
+    } else assert.deepEqual(codex, row('codex', 'ok', percent, window));
+    assert.deepEqual(claude, row('claude', 'error'));
   }
   f.collector._requestJson = async url => url.includes('chatgpt') ? {} : { limits: [{ kind: 'session', percent: 25 }] };
-  assert.deepEqual(await f.collector.collect(), [row('codex', 'ok', 0, 'quota'), row('claude', 'ok', 75)]);
+  const [codex, claude] = await f.collector.collect();
+  assert.equal(codex.status, 'cached');
+  assert.equal(codex.percent, 0);
+  assert.equal(codex.window, 'quota');
+  assert.equal(codex.cacheError, 'error');
+  assert.deepEqual(claude, row('claude', 'ok', 75));
 });
 
 test('reset metadata is finite, cached without drifting, and uses the selected window', async t => {
@@ -204,7 +216,7 @@ test('reset metadata is finite, cached without drifting, and uses the selected w
   f.collector._requestJson = async () => ({ rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 86400, reset_after_seconds: 3600 } } });
   await f.collector.collect({ force: true });
   f.advance(15000);
-  assert.deepEqual((await f.collector.collect())[0], row('codex', 'ok', 99, '24h', future));
+  assert.deepEqual((await f.collector.collect())[0], row('codex', 'ok', 99, '24h', f.now() + 3_600_000));
 });
 
 test('native Claude uses persisted last success on 429 without borrowing another account', async t => {
@@ -278,6 +290,10 @@ test('default transport handles success, malformed/oversized bodies, aborts and 
   });
   for (mode of ['ok', 'malformed', 'oversized', 'aborted', 'timeout', 'error']) {
     const collector = new ActiveQuotaCollector({ homeDir: f.homeDir });
-    assert.deepEqual(await collector.collect(), [row('codex', mode === 'ok' ? 'ok' : 'error', mode === 'ok' ? 77 : null), row('claude', 'missing')]);
+    const [codex, claude] = await collector.collect();
+    assert.deepEqual(codex, mode === 'ok' ? row('codex', 'ok', 77) : {
+      ...row('codex', 'ok', 77), status: 'cached', cachedAt: codex.cachedAt, cacheError: 'error',
+    });
+    assert.deepEqual(claude, row('claude', 'missing'));
   }
 });

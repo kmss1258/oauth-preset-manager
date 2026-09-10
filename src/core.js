@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { t } from './i18n.js';
 import { queryClaudeQuota } from './claude-quota-cache.js';
 import { GoQuota } from './opencode-go-quota.js';
+import { queryQuota } from './quota-cache.js';
 import { assertIdentity, checkCodexFileStore, entryIdentity, getCodexAuthPath, getProxyCodexAuthPath, matchesNative, nativeFromEntry, openAIExpires,
   parseAuth, parseNative, pathsOverlap, privateDir, readBytes, refreshedEntry, safePath,
   selectOpenAI, syncError, proxyAuthFromEntry, writeBytesAtomic } from './codex.js';
@@ -159,8 +160,13 @@ export class PresetManager {
     this.quotaCache = this._createEmptyQuotaCache();
     this.lastOpenAIRefreshResults = [];
     this._requestJson = httpsRequest;
+    this.now = Date.now;
     this._claudeQuotaCache = new Map();
-    this._goQuota = new GoQuota();
+    this._openAIQuotaCache = new Map();
+    this._googleQuotaCache = new Map();
+    this._goCookieQuotaCache = new Map();
+    this._commandCodeQuotaCache = new Map();
+    this._goQuota = new GoQuota({ directory: join(this.configDir, 'opencode-go-api-cache'), now: () => this.now() });
   }
 
   async init() {
@@ -1101,7 +1107,8 @@ export class PresetManager {
 
       const identity = this._extractOpenAIIdentity(entry.access, entry.account_id);
       const planType = normalizePlanType(identity.plan_type);
-      const existing = tokenMap.get(entry.access);
+      const tokenKey = `${entry.access} ${identity.account_id || entry.account_id || ''}`;
+      const existing = tokenMap.get(tokenKey);
       if (existing) {
         existing.presets.push(formatPresetLabel(presetName));
         existing.preset_names.push(presetName);
@@ -1109,7 +1116,7 @@ export class PresetManager {
           existing.nickname = presetName;
         }
       } else {
-        tokenMap.set(entry.access, {
+        tokenMap.set(tokenKey, {
           access: entry.access,
           expires: entry.expires,
           account_id: identity.account_id || entry.account_id,
@@ -1255,25 +1262,28 @@ export class PresetManager {
     return Promise.all([...targets.values()].map(async target => {
       const result = { provider: 'claude', account_id: `claude-${target.id.slice(0, 12)}`,
         presets: target.presets, daily: null, weekly: null, error: null };
-      if (target.expires != null && (!Number.isFinite(Number(target.expires)) || Number(target.expires) <= Date.now())) {
-        return { ...result, error: t('quota_claude_expired') };
-      }
-      // OpenCode omits scope metadata; in that case the API enforces permission.
       if (target.scopes != null && (!Array.isArray(target.scopes) || !target.scopes.includes('user:profile'))) {
         return { ...result, error: t('quota_claude_scope') };
       }
+      if (target.expires != null && (typeof target.expires !== 'number' || !Number.isFinite(target.expires))) {
+        return { ...result, error: t('quota_claude_failed') };
+      }
+      const expired = target.expires != null && target.expires <= this.now();
       const snapshot = await queryClaudeQuota({ token: target.token,
         directory: join(this.configDir, 'claude-quota-cache'), memory: this._claudeQuotaCache,
-        fetchUsage: async () => parseClaudeUsage(await this._requestJson('https://api.anthropic.com/api/oauth/usage', {
+        now: this.now,
+        fetchUsage: expired ? async () => { throw { statusCode: 401 }; } : async () => parseClaudeUsage(await this._requestJson('https://api.anthropic.com/api/oauth/usage', {
           method: 'GET', headers: { Authorization: `Bearer ${target.token}`,
             'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json', 'Content-Type': 'application/json' },
         }, 10_000)),
+        classifyError: error => error?.statusCode === 401 ? (expired ? 'expired' : 'unauthorized') : undefined,
       });
       const key = { expired: 'quota_claude_expired', unauthorized: 'quota_claude_scope',
         rate_limited: 'quota_claude_rate_limited', error: 'quota_claude_failed' }[snapshot.errorCode];
       if (!snapshot.usage) return { ...result, error: t(key || 'quota_claude_failed') };
       return { ...result, ...snapshot.usage, ...(key ? {
-        cached: true, cached_at: new Date(snapshot.fetchedAt).toISOString(), cache_error: t(key),
+        cached: true, cached_at: snapshot.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : null,
+        cache_error: t(key),
       } : {}) };
     }));
   }
@@ -1307,62 +1317,42 @@ export class PresetManager {
     // A configured key never silently falls back to a different cookie account.
     if (key != null) return this._goQuota.collect(key);
     const { workspaceId, authCookie } = await this._getOpenCodeGoCredentials();
-    if (!workspaceId || !authCookie) return [];
+    if (!workspaceId || !authCookie || /[\x00-\x1f\x7f-\x9f]/.test(workspaceId)
+      || /[\x00-\x1f\x7f-\x9f]/.test(authCookie)) return [];
 
-    try {
-      const url = 'https://opencode.ai/workspace/' + encodeURIComponent(workspaceId) + '/go';
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Cookie': 'auth=' + authCookie,
-        },
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!response.ok) return [];
-
-      const html = await response.text();
-      const patterns = [
-        ['rolling', /rollingUsage:\$R\[\d+\]=(\{[^}]+\})/],
-        ['weekly', /weeklyUsage:\$R\[\d+\]=(\{[^}]+\})/],
-        ['monthly', /monthlyUsage:\$R\[\d+\]=(\{[^}]+\})/],
-      ];
-
-      const usage = {};
-      for (const [key, re] of patterns) {
-        const match = html.match(re);
-        if (!match) continue;
-        try {
-          const jsonStr = match[1].replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3');
-          usage[key] = JSON.parse(jsonStr);
-        } catch {}
-      }
-
-      if (!usage.rolling && !usage.weekly && !usage.monthly) return [];
-
-      const daily = usage.rolling ? {
-        percent_remaining: Math.round(100 - usage.rolling.usagePercent),
-        reset_time_iso: usage.rolling.resetInSec ? new Date(Date.now() + usage.rolling.resetInSec * 1000).toISOString() : null,
-      } : null;
-
-      const weekly = usage.weekly ? {
-        percent_remaining: Math.round(100 - usage.weekly.usagePercent),
-        reset_time_iso: usage.weekly.resetInSec ? new Date(Date.now() + usage.weekly.resetInSec * 1000).toISOString() : null,
-      } : null;
-
-      return [{
-        provider: 'opencodego',
-        account_id: workspaceId,
-        daily,
-        weekly,
-        monthly_percent: usage.monthly ? Math.round(100 - usage.monthly.usagePercent) : null,
-        monthly_reset_iso: usage.monthly?.resetInSec ? new Date(Date.now() + usage.monthly.resetInSec * 1000).toISOString() : null,
-        error: null,
-      }];
-    } catch {
-      return [];
+    const snapshot = await queryQuota({
+      directory: join(this.configDir, 'opencode-go-cookie-cache'),
+      memory: this._goCookieQuotaCache,
+      namespace: 'opencode-go-cookie-v1',
+      identity: { provider: 'opencodego', mode: 'cookie', endpoint: 'https://opencode.ai/workspace/:workspace/go',
+        schema: 1, credential: authCookie, workspace: workspaceId },
+      now: () => this.now(),
+      fetchUsage: async () => {
+        const url = 'https://opencode.ai/workspace/' + encodeURIComponent(workspaceId) + '/go';
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Cookie': 'auth=' + authCookie,
+          }, signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) throw { statusCode: response.status,
+          retryAfter: response.headers?.get?.('retry-after') };
+        return parseLegacyGoUsage(await response.text(), this.now());
+      },
+      normalize: value => normalizeLegacyGoUsage(value),
+    });
+    const base = { provider: 'opencodego', account_id: workspaceId, error: null };
+    if (!snapshot.usage) {
+      const error = snapshot.errorCode === 'rate_limited' ? t('quota_go_rate_limited') : t('quota_go_failed');
+      return [{ ...base, daily: null, weekly: null, monthly_percent: null, monthly_reset_iso: null, error }];
     }
+    return [{ ...base, ...snapshot.usage,
+      ...(snapshot.errorCode ? {
+        cached: true,
+        cached_at: snapshot.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : null,
+        cache_error: snapshot.errorCode,
+      } : {}) }];
   }
 
   async collectCommandCodeQuota() {
@@ -1371,7 +1361,8 @@ export class PresetManager {
 
     let credential;
     try {
-      const authData = JSON.parse(await fs.readFile(authPath, 'utf-8'));
+      const bytes = await readBytes(authPath);
+      const authData = bytes ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) : null;
       credential = authData?.apiKey
         || authData?.['command-code']?.key
         || authData?.commandcode?.access
@@ -1380,88 +1371,71 @@ export class PresetManager {
       return [];
     }
 
-    if (typeof credential !== 'string' || !credential.trim()) return [];
-
+    if (typeof credential !== 'string' || !credential.trim() || /[\s\x00-\x1f\x7f-\x9f]/.test(credential)) return [];
+    const token = credential.trim();
+    const displayPath = authPath.replace(homedir(), '~');
+    const base = { provider: 'commandcode', account_id: 'command-code',
+      presets: [`(Command Code: ${displayPath})`], daily: null, weekly: null, error: null };
     const request = (path, query = {}) => {
       const params = new URLSearchParams(
         Object.entries(query).filter(([, value]) => value != null && value !== '')
       ).toString();
       return this._requestJson(`${COMMAND_CODE_API_URL}${path}${params ? `?${params}` : ''}`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${credential.trim()}`,
-          Accept: 'application/json',
-        },
+        method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
       }, 10000);
     };
 
-    try {
-      const whoami = await request('/whoami');
-      const orgId = whoami?.org?.id;
-      const credits = await request('/billing/credits', { orgId });
-      const [subscription, usage] = await Promise.all([
-        request('/billing/subscriptions', { orgId }).catch(() => null),
-        request('/usage/summary', { orgId }).catch(() => null),
-      ]);
-      const fiveHour = credits?.windowLimits?.fiveHour;
-      const weeklyWindow = credits?.windowLimits?.weekly;
-      const toRemaining = (window) => {
-        if (!window || !Number.isFinite(Number(window.cap))) return null;
-        const remaining = 100 - (Number(window.used || 0) / Number(window.cap)) * 100;
-        return Math.max(0, Math.min(100, Math.round(remaining)));
-      };
-      const toReset = (window) => {
-        if (!window?.resetAt) return null;
-        if (typeof window.resetAt === 'string' && Number.isNaN(Number(window.resetAt))) {
-          return new Date(window.resetAt).toISOString();
+    let whoami = null;
+    let orgId = null;
+    const snapshot = await queryQuota({
+      directory: join(this.configDir, 'command-code-quota-cache'),
+      memory: this._commandCodeQuotaCache,
+      namespace: 'command-code-quota-v1',
+      identity: { provider: 'commandcode', endpoint: COMMAND_CODE_API_URL, schema: 1,
+        credential: token, context: 'account' },
+      now: () => this.now(),
+      fetchUsage: async () => {
+        whoami = await request('/whoami');
+        orgId = whoami?.org?.id;
+        if (typeof orgId !== 'string' || !orgId.trim() || /[\s\x00-\x1f\x7f-\x9f]/.test(orgId)) {
+          throw { statusCode: 401 };
         }
-        return resetTimeIsoFromSeconds(Number(window.resetAt));
-      };
-      const displayPath = authPath.replace(homedir(), '~');
-      const monthlyCredits = Number(credits?.credits?.monthlyCredits || 0);
-      const purchasedCredits = Number(credits?.credits?.purchasedCredits || 0);
-      const freeCredits = Number(credits?.credits?.freeCredits || 0);
-
-      return [{
-        provider: 'commandcode',
-        account_id: orgId || whoami?.user?.userName || 'command-code',
-        nickname: whoami?.user?.userName || null,
-        presets: [`(Command Code: ${displayPath})`],
-        daily: fiveHour ? {
-          percent_remaining: toRemaining(fiveHour),
-          reset_time_iso: toReset(fiveHour),
-        } : null,
-        weekly: weeklyWindow ? {
-          percent_remaining: toRemaining(weeklyWindow),
-          reset_time_iso: toReset(weeklyWindow),
-        } : null,
-        command_code_credits: {
-          monthly: monthlyCredits,
-          purchased: purchasedCredits,
-          free: freeCredits,
-          total_remaining: monthlyCredits + purchasedCredits + freeCredits,
-        },
-        command_code_usage: {
-          total_cost: Number(usage?.totalCost || 0),
-          total_count: Number(usage?.totalCount || 0),
-          total_tokens: Number(usage?.totalTokens || 0),
-        },
-        command_code_period: {
-          start: subscription?.data?.currentPeriodStart || null,
-          end: subscription?.data?.currentPeriodEnd || null,
-        },
-        error: null,
-      }];
-    } catch (error) {
-      return [{
-        provider: 'commandcode',
-        account_id: 'command-code',
-        presets: [`(Command Code: ${authPath.replace(homedir(), '~')})`],
-        daily: null,
-        weekly: null,
-        error: `Command Code API error: ${error.message}`,
-      }];
+        const credits = await request('/billing/credits', { orgId });
+        const [subscription, usage] = await Promise.all([
+          request('/billing/subscriptions', { orgId }), request('/usage/summary', { orgId }),
+        ]);
+        const fiveHour = credits?.windowLimits?.fiveHour;
+        const weeklyWindow = credits?.windowLimits?.weekly;
+        const sourceCredits = credits?.credits;
+        return normalizeCommandCodeSnapshot({
+          daily: commandCodeWindow(fiveHour), weekly: commandCodeWindow(weeklyWindow),
+          command_code_credits: {
+            monthly: sourceCredits?.monthlyCredits, purchased: sourceCredits?.purchasedCredits,
+            free: sourceCredits?.freeCredits,
+          },
+          command_code_usage: {
+            total_cost: usage?.totalCost, total_count: usage?.totalCount, total_tokens: usage?.totalTokens,
+          },
+          command_code_period: {
+            start: subscription?.data?.currentPeriodStart, end: subscription?.data?.currentPeriodEnd,
+          },
+        });
+      },
+      normalize: normalizeCommandCodeSnapshot,
+    });
+    if (!snapshot.usage) {
+      const error = snapshot.errorCode === 'rate_limited' ? 'Command Code API rate limited'
+        : snapshot.errorCode === 'expired' || snapshot.errorCode === 'unauthorized' ? 'Command Code authorization failed'
+          : 'Command Code usage unavailable';
+      return [{ ...base, account_id: orgId || base.account_id, error }];
     }
+    return [{ ...base, ...snapshot.usage, account_id: orgId || base.account_id,
+      nickname: typeof whoami?.user?.userName === 'string' ? whoami.user.userName : null,
+      ...(snapshot.errorCode ? {
+        cached: true,
+        cached_at: snapshot.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : null,
+        cache_error: snapshot.errorCode,
+      } : {}) }];
   }
 
   _extractPresetNameFromLabel(label) {
@@ -1499,10 +1473,14 @@ export class PresetManager {
           weekly_percent: existing?.weekly_percent ?? null,
           last_attempt_at: fetchedAt,
           last_success_at: existing?.last_success_at || null,
-          last_error: result.error || null,
+          last_error: result.error || (result.cached ? result.cache_error || 'cached' : null),
         };
 
-        if (!result.error) {
+        if (result.cached) {
+          next.daily_percent = result.daily?.percent_remaining ?? next.daily_percent;
+          next.weekly_percent = result.weekly?.percent_remaining ?? next.weekly_percent;
+        }
+        if (!result.error && !result.cached) {
           next.daily_percent = result.daily?.percent_remaining ?? null;
           next.weekly_percent = result.weekly?.percent_remaining ?? null;
           next.last_success_at = fetchedAt;
@@ -1810,72 +1788,60 @@ export class PresetManager {
 
   async _fetchOpenAIQuotaForToken(accessToken, expires, accountId, timeoutSeconds = 10, authPlanType = null) {
     const fallbackPlanType = normalizePlanType(authPlanType);
-    const nowMs = Date.now();
-    if (typeof expires === 'number' && expires < nowMs) {
-      return {
-        provider: 'openai',
-        account_id: accountId,
-        daily: null,
-        weekly: null,
-        plan_type: fallbackPlanType,
-        plan_type_source: fallbackPlanType ? 'auth' : null,
-        error: 'Token expired',
-      };
-    }
-
-    const resolvedAccountId = accountId || this._openaiAccountIdFromJWT(accessToken);
-    const headers = {
-      'Authorization': `Bearer ${accessToken}`,
-      'User-Agent': 'OpenCode-Quota-Toast/1.0',
+    const base = {
+      provider: 'openai', account_id: accountId || null, daily: null, weekly: null,
+      plan_type: fallbackPlanType, plan_type_source: fallbackPlanType ? 'auth' : null, error: null,
     };
-    if (resolvedAccountId) {
-      headers['ChatGPT-Account-Id'] = resolvedAccountId;
+    if (typeof accessToken !== 'string' || !accessToken.trim()
+      || /[\s\x00-\x1f\x7f-\x9f]/.test(accessToken)) return { ...base, error: 'OpenAI authentication unavailable' };
+    const token = accessToken.trim();
+    const payload = parseJWTPayload(token);
+    const jwtExpiry = typeof payload?.exp === 'number' && Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
+    const effectiveExpiry = expires == null ? jwtExpiry : expires;
+    if (effectiveExpiry != null && (typeof effectiveExpiry !== 'number' || !Number.isFinite(effectiveExpiry))) {
+      return { ...base, error: 'OpenAI authentication unavailable' };
     }
-
-    try {
-      const data = await this._requestJson(OPENAI_USAGE_URL, { headers, method: 'GET' }, timeoutSeconds * 1000);
-      
-      const livePlanType = normalizePlanType(data.plan_type);
-      const rateLimit = data.rate_limit || {};
-      const primary = rateLimit.primary_window;
-      const secondary = rateLimit.secondary_window;
-
-      let daily = null;
-      if (primary && typeof primary === 'object') {
-        daily = {
-          percent_remaining: remainingPercent(primary),
-          reset_time_iso: resetTimeIsoFromSeconds(primary.reset_at) || resetTimeIsoFromNow(primary.reset_after_seconds),
-        };
-      }
-
-      let weekly = null;
-      if (secondary && typeof secondary === 'object') {
-        weekly = {
-          percent_remaining: remainingPercent(secondary),
-          reset_time_iso: resetTimeIsoFromSeconds(secondary.reset_at) || resetTimeIsoFromNow(secondary.reset_after_seconds),
-        };
-      }
-
-      return {
-        provider: 'openai',
-        account_id: resolvedAccountId,
-        daily,
-        weekly,
-        plan_type: livePlanType || fallbackPlanType,
-        plan_type_source: livePlanType ? 'usage' : (fallbackPlanType ? 'auth' : null),
-        error: null,
-      };
-    } catch (exc) {
-      return {
-        provider: 'openai',
-        account_id: resolvedAccountId,
-        daily: null,
-        weekly: null,
-        plan_type: fallbackPlanType,
-        plan_type_source: fallbackPlanType ? 'auth' : null,
-        error: `OpenAI API error: ${exc.message}`,
-      };
+    const suppliedAccountId = accountId == null ? null : accountId;
+    if (suppliedAccountId != null && (typeof suppliedAccountId !== 'string'
+      || /[\x00-\x1f\x7f-\x9f]/.test(suppliedAccountId))) return { ...base, error: 'OpenAI authentication unavailable' };
+    const resolvedAccountId = (suppliedAccountId || this._openaiAccountIdFromJWT(token))?.trim() || null;
+    if (resolvedAccountId && /[\x00-\x1f\x7f-\x9f]/.test(resolvedAccountId)) {
+      return { ...base, error: 'OpenAI authentication unavailable' };
     }
+    const snapshot = await queryQuota({
+      directory: join(this.configDir, 'openai-quota-cache'),
+      memory: this._openAIQuotaCache,
+      namespace: 'openai-wham-usage-v1',
+      identity: { provider: 'openai', endpoint: OPENAI_USAGE_URL, schema: 1,
+        credential: token, account_id: resolvedAccountId },
+      now: () => this.now(),
+      fetchUsage: effectiveExpiry != null && effectiveExpiry <= this.now()
+        ? async () => { throw { statusCode: 401 }; }
+        : () => this._requestJson(OPENAI_USAGE_URL, {
+          headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'OpenCode-Quota-Toast/1.0',
+            ...(resolvedAccountId ? { 'ChatGPT-Account-Id': resolvedAccountId } : {}) }, method: 'GET',
+        }, timeoutSeconds * 1000),
+      normalize: value => normalizeOpenAIUsage(value, this.now()),
+      classifyError: error => error?.statusCode === 401 ? (effectiveExpiry != null && effectiveExpiry <= this.now() ? 'expired' : 'unauthorized') : undefined,
+    });
+    const planType = normalizePlanType(snapshot.usage?.plan_type) || fallbackPlanType;
+    const planTypeSource = snapshot.usage?.plan_type ? 'usage' : (fallbackPlanType ? 'auth' : null);
+    if (!snapshot.usage) {
+      const error = snapshot.errorCode === 'expired' ? 'Token expired'
+        : snapshot.errorCode === 'unauthorized' ? 'OpenAI authorization failed'
+          : snapshot.errorCode === 'rate_limited' ? 'OpenAI API rate limited'
+            : 'OpenAI usage unavailable';
+      return { ...base, account_id: resolvedAccountId, plan_type: planType,
+        plan_type_source: planTypeSource, error };
+    }
+    return { ...base, ...snapshot.usage, account_id: resolvedAccountId,
+      plan_type: planType, plan_type_source: planTypeSource,
+      ...(snapshot.errorCode ? {
+        cached: true,
+        cached_at: snapshot.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : null,
+        cache_error: snapshot.errorCode,
+      } : {}) };
+
   }
 
   _openaiAccountIdFromJWT(token) {
@@ -1892,124 +1858,55 @@ export class PresetManager {
   }
 
   async _fetchGoogleQuotaForToken(accessToken, refreshToken, projectId, timeoutSeconds = 10) {
-    let token = accessToken;
-
-    if (!token && refreshToken) {
-      token = await refreshGoogleToken(refreshToken);
+    const actualProjectId = typeof projectId === 'string' && projectId.trim() ? projectId.trim() : 'unknown-project';
+    const access = typeof accessToken === 'string' && accessToken.trim() ? accessToken.trim() : null;
+    const refresh = typeof refreshToken === 'string' && refreshToken.trim() ? refreshToken.trim() : null;
+    const credential = refresh || access;
+    const base = { provider: 'google', account_id: projectId || 'unknown', daily: null, weekly: null, error: null };
+    if (!credential || /[\s\x00-\x1f\x7f-\x9f]/.test(credential)
+      || (projectId != null && (typeof projectId !== 'string' || /[\s\x00-\x1f\x7f-\x9f]/.test(projectId)))) {
+      return [{ ...base, error: 'Google authentication unavailable' }];
     }
 
-    if (!token) {
-      return [{
-        provider: 'google',
-        account_id: projectId || 'unknown',
-        error: 'No access token (Refresh failed)',
-      }];
-    }
-
-    const actualProjectId = projectId || 'unknown-project';
-
-    const headers = {
-      'Authorization': `Bearer ${token}`,
-      'User-Agent': 'antigravity/1.11.9',
-      'Content-Type': 'application/json',
-    };
-
-    try {
-      const data = await httpsRequest(
-        GOOGLE_QUOTA_API_URL,
-        { headers, method: 'POST', body: JSON.stringify({ project: actualProjectId }) },
-        timeoutSeconds * 1000
-      );
-
-      const models = data.models || {};
-      const results = [];
-
-      const modelEntries = Object.entries(models);
-
-      for (const [key, modelData] of modelEntries) {
-        const quotaInfo = modelData.quotaInfo;
-        if (!quotaInfo) continue;
-        if (key.toLowerCase().startsWith('chat_')) continue;
-
-        let label = modelData.displayName || key;
-        const lowerKey = key.toLowerCase();
-
-        if (lowerKey.includes('flash')) label = 'G3Flash';
-        else if (lowerKey.includes('pro')) label = 'G3Pro';
-        else if (lowerKey.includes('claude') && lowerKey.includes('opus')) label = 'Claude-Opus';
-        else if (lowerKey.includes('claude') && lowerKey.includes('sonnet')) label = 'Claude-Sonnet';
-        else if (lowerKey.includes('claude')) label = 'Claude';
-        else if (lowerKey.includes('gpt') || lowerKey.includes('o1')) label = 'GPT/O1';
-
-        const remaining = quotaInfo.remainingFraction ?? 1;
-        const resetTime = quotaInfo.resetTime || null;
-
-        results.push({
-          provider: 'google',
-          account_id: projectId,
-          daily: {
-            percent_remaining: Math.round(remaining * 100),
-            reset_time_iso: resetTime,
-            label,
-          },
-          weekly: null,
-          error: null,
-        });
-      }
-
-      if (results.length === 0) {
-        return [{
-          provider: 'google',
-          account_id: projectId,
-          daily: null,
-          weekly: null,
-          error: 'No quota info found',
-        }];
-      }
-
-      return results.sort((a, b) => (a.daily?.label || '').localeCompare(b.daily?.label || ''));
-    } catch (exc) {
-      if (exc.message.includes('401') && refreshToken && token === accessToken) {
-        const newToken = await refreshGoogleToken(refreshToken);
-        if (newToken) {
-          headers['Authorization'] = `Bearer ${newToken}`;
-          try {
-            const data = await httpsRequest(
-              GOOGLE_QUOTA_API_URL,
-              { headers, method: 'POST', body: JSON.stringify({ project: actualProjectId }) },
-              timeoutSeconds * 1000
-            );
-            const models = data.models || {};
-            const results = [];
-            for (const [key, modelData] of Object.entries(models)) {
-              const quotaInfo = modelData.quotaInfo;
-              if (!quotaInfo) continue;
-              let label = key;
-              const lowerKey = key.toLowerCase();
-              if (lowerKey.includes('flash')) label = 'G3Flash';
-              else if (lowerKey.includes('pro')) label = 'G3Pro';
-              else if (lowerKey.includes('claude')) label = 'Claude';
-              else if (modelData.displayName) label = modelData.displayName;
-              const remaining = quotaInfo.remainingFraction || 0;
-              results.push({
-                provider: 'google',
-                account_id: projectId,
-                daily: { percent_remaining: Math.round(remaining * 100), reset_time_iso: quotaInfo.resetTime, label },
-                weekly: null,
-                error: null,
-              });
-            }
-            return results.length ? results : [{ provider: 'google', account_id: projectId, error: 'No quota info' }];
-          } catch (exc2) {
-            return [{ provider: 'google', account_id: projectId, error: `Retry failed: ${exc2.message}` }];
-          }
-        } else {
-          return [{ provider: 'google', account_id: projectId, error: 'Token expired (Refresh failed)' }];
+    const snapshot = await queryQuota({
+      directory: join(this.configDir, 'google-quota-cache'),
+      memory: this._googleQuotaCache,
+      namespace: 'google-antigravity-models-v1',
+      identity: { provider: 'google', endpoint: GOOGLE_QUOTA_API_URL, schema: 1,
+        credential, project: actualProjectId },
+      now: () => this.now(),
+      fetchUsage: async () => {
+        let token = access;
+        if (!token && refresh) token = await refreshGoogleToken(refresh, this._requestJson);
+        if (!token || typeof token !== 'string' || /[\s\x00-\x1f\x7f-\x9f]/.test(token)) throw { statusCode: 401 };
+        const request = currentToken => this._requestJson(GOOGLE_QUOTA_API_URL, {
+          headers: { Authorization: `Bearer ${currentToken}`, 'User-Agent': 'antigravity/1.11.9', 'Content-Type': 'application/json' },
+          method: 'POST', body: JSON.stringify({ project: actualProjectId }),
+        }, timeoutSeconds * 1000);
+        try {
+          return await request(token);
+        } catch (error) {
+          if (error?.statusCode !== 401 || !refresh || token !== access) throw error;
+          const next = await refreshGoogleToken(refresh, this._requestJson);
+          if (!next || typeof next !== 'string' || /[\s\x00-\x1f\x7f-\x9f]/.test(next)) throw error;
+          return request(next);
         }
-      }
-      
-      return [{ provider: 'google', account_id: projectId, error: exc.message }];
+      },
+      normalize: normalizeGoogleUsage,
+    });
+    if (!snapshot.usage) {
+      const error = snapshot.errorCode === 'expired' ? 'Google token expired'
+        : snapshot.errorCode === 'unauthorized' ? 'Google authorization failed'
+          : snapshot.errorCode === 'rate_limited' ? 'Google API rate limited'
+            : 'Google usage unavailable';
+      return [{ ...base, error }];
     }
+    return snapshot.usage.models.map(model => ({ ...base, daily: model,
+      ...(snapshot.errorCode ? {
+        cached: true,
+        cached_at: snapshot.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : null,
+        cache_error: snapshot.errorCode,
+      } : {}) }));
   }
 }
 
@@ -2139,20 +2036,58 @@ function extractOpenAIResponseText(data) {
   return completed;
 }
 
+function normalizeOpenAIUsage(data, now = Date.now()) {
+  if (isPlainObject(data) && !data.rate_limit && (data.daily !== undefined || data.weekly !== undefined)) {
+    const clean = value => {
+      if (value == null) return null;
+      if (!isPlainObject(value) || typeof value.percent_remaining !== 'number' || !Number.isFinite(value.percent_remaining)
+        || value.percent_remaining < 0 || value.percent_remaining > 100
+        || (value.reset_time_iso != null && (typeof value.reset_time_iso !== 'string'
+          || !Number.isFinite(Date.parse(value.reset_time_iso))))) throw new Error('Invalid cached OpenAI quota');
+      return { percent_remaining: value.percent_remaining,
+        reset_time_iso: value.reset_time_iso ? new Date(value.reset_time_iso).toISOString() : null };
+    };
+    const daily = clean(data.daily), weekly = clean(data.weekly);
+    if (!daily && !weekly) throw new Error('Invalid cached OpenAI quota');
+    const plan_type = normalizePlanType(data.plan_type);
+    return { daily, weekly, ...(plan_type ? { plan_type } : {}) };
+  }
+  if (!isPlainObject(data) || !isPlainObject(data.rate_limit)) throw new Error('Invalid OpenAI usage response');
+  const normalizeWindow = value => {
+    if (value == null) return null;
+    if (!isPlainObject(value) || typeof value.used_percent !== 'number' || !Number.isFinite(value.used_percent)) {
+      throw new Error('Invalid OpenAI quota window');
+    }
+    const used = Math.max(0, Math.min(100, value.used_percent));
+    let reset_time_iso = null;
+    try {
+      reset_time_iso = resetTimeIsoFromSeconds(value.reset_at)
+        || resetTimeIsoFromNow(value.reset_after_seconds, now);
+    } catch {}
+    return { percent_remaining: Math.round(100 - used), reset_time_iso };
+  };
+  const daily = normalizeWindow(data.rate_limit.primary_window);
+  const weekly = normalizeWindow(data.rate_limit.secondary_window);
+  if (!daily && !weekly) throw new Error('Invalid OpenAI usage response');
+  const plan_type = normalizePlanType(data.plan_type);
+  return { daily, weekly, ...(plan_type ? { plan_type } : {}) };
+}
+
 function resetTimeIsoFromSeconds(resetAtSeconds) {
-  if (!resetAtSeconds) return null;
+  if (typeof resetAtSeconds !== 'number' || !Number.isFinite(resetAtSeconds) || resetAtSeconds <= 0) return null;
   let seconds = resetAtSeconds;
   if (seconds > 100000000000) {
     seconds /= 1000;
   }
   const date = new Date(seconds * 1000);
-  return date.toISOString().replace('+00:00', 'Z');
+  return Number.isFinite(date.getTime()) ? date.toISOString().replace('+00:00', 'Z') : null;
 }
 
-function resetTimeIsoFromNow(resetAfterSeconds) {
-  if (!resetAfterSeconds || resetAfterSeconds <= 0) return null;
-  const date = new Date(Date.now() + resetAfterSeconds * 1000);
-  return date.toISOString().replace('+00:00', 'Z');
+function resetTimeIsoFromNow(resetAfterSeconds, now = Date.now()) {
+  if (typeof resetAfterSeconds !== 'number' || !Number.isFinite(resetAfterSeconds) || resetAfterSeconds <= 0
+    || typeof now !== 'number' || !Number.isFinite(now)) return null;
+  const date = new Date(now + resetAfterSeconds * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString().replace('+00:00', 'Z') : null;
 }
 
 function remainingPercent(window) {
@@ -2163,7 +2098,172 @@ function remainingPercent(window) {
   return Math.round(remaining);
 }
 
-async function refreshGoogleToken(refreshToken) {
+function parseLegacyGoUsage(html, now) {
+  if (typeof html !== 'string') throw new Error('Invalid Go response');
+  const patterns = [
+    ['rolling', /rollingUsage:\$R\[\d+\]=(\{[^}]+\})/],
+    ['weekly', /weeklyUsage:\$R\[\d+\]=(\{[^}]+\})/],
+    ['monthly', /monthlyUsage:\$R\[\d+\]=(\{[^}]+\})/],
+  ];
+  const raw = {};
+  for (const [key, pattern] of patterns) {
+    const match = html.match(pattern);
+    if (!match) continue;
+    const json = match[1].replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3');
+    raw[key] = JSON.parse(json);
+  }
+  const window = value => {
+    if (value == null) return null;
+    if (!isPlainObject(value) || typeof value.usagePercent !== 'number' || !Number.isFinite(value.usagePercent)
+      || value.usagePercent < 0 || value.usagePercent > 100
+      || (value.resetInSec != null && (typeof value.resetInSec !== 'number' || !Number.isFinite(value.resetInSec) || value.resetInSec < 0))) {
+      throw new Error('Invalid Go usage');
+    }
+    return { percent_remaining: Math.round(100 - value.usagePercent),
+      reset_time_iso: value.resetInSec > 0 ? new Date(now + value.resetInSec * 1000).toISOString() : null };
+  };
+  const daily = window(raw.rolling);
+  if (!daily) throw new Error('Missing Go rolling usage');
+  const weekly = window(raw.weekly);
+  const monthly = window(raw.monthly);
+  return { daily, weekly, monthly_percent: monthly?.percent_remaining ?? null,
+    monthly_reset_iso: monthly?.reset_time_iso ?? null };
+}
+
+function normalizeLegacyGoUsage(value) {
+  if (!isPlainObject(value) || !isPlainObject(value.daily)) throw new Error('Invalid Go usage');
+  const window = current => {
+    if (current == null) return null;
+    if (!isPlainObject(current) || typeof current.percent_remaining !== 'number'
+      || !Number.isFinite(current.percent_remaining) || current.percent_remaining < 0 || current.percent_remaining > 100
+      || (current.reset_time_iso != null && (typeof current.reset_time_iso !== 'string' || !Number.isFinite(Date.parse(current.reset_time_iso))))) {
+      throw new Error('Invalid Go usage');
+    }
+    return { percent_remaining: current.percent_remaining,
+      reset_time_iso: current.reset_time_iso ? new Date(current.reset_time_iso).toISOString() : null };
+  };
+  const daily = window(value.daily);
+  const weekly = window(value.weekly);
+  const monthly = value.monthly_percent == null ? null : value.monthly_percent;
+  if (monthly != null && (typeof monthly !== 'number' || !Number.isFinite(monthly) || monthly < 0 || monthly > 100)) {
+    throw new Error('Invalid Go monthly usage');
+  }
+  if (!daily) throw new Error('Missing Go rolling usage');
+  if (value.monthly_reset_iso != null && (typeof value.monthly_reset_iso !== 'string'
+    || !Number.isFinite(Date.parse(value.monthly_reset_iso)))) throw new Error('Invalid Go monthly reset');
+  return { daily, weekly, monthly_percent: monthly,
+    monthly_reset_iso: value.monthly_reset_iso ? new Date(value.monthly_reset_iso).toISOString() : null };
+}
+
+function commandCodeReset(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') {
+    const numeric = Number(value.trim());
+    if (Number.isFinite(numeric)) return commandCodeReset(numeric);
+    if (!Number.isFinite(Date.parse(value))) throw new Error('Invalid Command Code reset');
+    return new Date(value).toISOString();
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error('Invalid Command Code reset');
+  if (value === 0) return null;
+  return resetTimeIsoFromSeconds(value);
+}
+
+function commandCodeWindow(value) {
+  if (value == null) return null;
+  if (!isPlainObject(value)) throw new Error('Invalid Command Code window');
+  const cap = commandCodeNumber(value.cap);
+  const used = commandCodeNumber(value.used);
+  if (cap <= 0) throw new Error('Invalid Command Code window');
+  return { percent_remaining: Math.round(Math.max(0, Math.min(100, 100 - used / cap * 100))),
+    reset_time_iso: commandCodeReset(value.resetAt) };
+}
+
+function commandCodeNumber(value) {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+  if (!Number.isFinite(number) || number < 0) throw new Error('Invalid Command Code number');
+  return number;
+}
+
+function normalizeCommandCodeSnapshot(value) {
+  if (!isPlainObject(value)) throw new Error('Invalid Command Code usage');
+  const cleanWindow = current => {
+    if (current == null) return null;
+    if (!isPlainObject(current) || typeof current.percent_remaining !== 'number' || !Number.isFinite(current.percent_remaining)
+      || current.percent_remaining < 0 || current.percent_remaining > 100
+      || (current.reset_time_iso != null && (typeof current.reset_time_iso !== 'string'
+        || !Number.isFinite(Date.parse(current.reset_time_iso)))) ) throw new Error('Invalid Command Code window');
+    return { percent_remaining: current.percent_remaining,
+      reset_time_iso: current.reset_time_iso ? new Date(current.reset_time_iso).toISOString() : null };
+  };
+  const daily = cleanWindow(value.daily);
+  if (!daily) throw new Error('Missing Command Code five-hour usage');
+  const weekly = cleanWindow(value.weekly);
+  const credits = value.command_code_credits;
+  if (!isPlainObject(credits)) throw new Error('Missing Command Code credits');
+  const monthly = commandCodeNumber(credits.monthly);
+  const purchased = commandCodeNumber(credits.purchased);
+  const free = commandCodeNumber(credits.free);
+  const usage = value.command_code_usage;
+  if (!isPlainObject(usage)) throw new Error('Missing Command Code usage');
+  const total_cost = commandCodeNumber(usage.total_cost);
+  const total_count = commandCodeNumber(usage.total_count);
+  const total_tokens = commandCodeNumber(usage.total_tokens);
+  const period = value.command_code_period;
+  if (!isPlainObject(period)) throw new Error('Missing Command Code period');
+  const periodValue = current => {
+    if (current == null || current === '') return null;
+    if (typeof current !== 'string' || !Number.isFinite(Date.parse(current))) throw new Error('Invalid Command Code period');
+    return new Date(current).toISOString();
+  };
+  return { daily, weekly,
+    command_code_credits: { monthly, purchased, free, total_remaining: monthly + purchased + free },
+    command_code_usage: { total_cost, total_count, total_tokens },
+    command_code_period: { start: periodValue(period.start), end: periodValue(period.end) } };
+}
+
+function normalizeGoogleUsage(data) {
+  if (isPlainObject(data) && Array.isArray(data.models)) {
+    const models = data.models.map(model => {
+      if (!isPlainObject(model) || typeof model.label !== 'string' || !model.label
+        || typeof model.percent_remaining !== 'number' || !Number.isFinite(model.percent_remaining)
+        || model.percent_remaining < 0 || model.percent_remaining > 100
+        || (model.reset_time_iso != null && (typeof model.reset_time_iso !== 'string'
+          || !Number.isFinite(Date.parse(model.reset_time_iso))))) throw new Error('Invalid cached Google quota');
+      const label = model.label.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 80) || 'model';
+      return { percent_remaining: model.percent_remaining, reset_time_iso: model.reset_time_iso
+        ? new Date(model.reset_time_iso).toISOString() : null, label };
+    });
+    if (!models.length) throw new Error('No Google quota info');
+    models.sort((a, b) => a.label.localeCompare(b.label));
+    return { models };
+  }
+  if (!isPlainObject(data) || !isPlainObject(data.models)) throw new Error('Invalid Google usage response');
+  const models = [];
+  for (const [key, modelData] of Object.entries(data.models)) {
+    if (key.toLowerCase().startsWith('chat_') || !isPlainObject(modelData?.quotaInfo)) continue;
+    const quotaInfo = modelData.quotaInfo;
+    if (typeof quotaInfo.remainingFraction !== 'number' || !Number.isFinite(quotaInfo.remainingFraction)
+      || quotaInfo.remainingFraction < 0 || quotaInfo.remainingFraction > 1) throw new Error('Invalid Google quota');
+    const reset = quotaInfo.resetTime;
+    if (reset != null && (typeof reset !== 'string' || !Number.isFinite(Date.parse(reset)))) throw new Error('Invalid Google reset');
+    const lowerKey = key.toLowerCase();
+    let label = typeof modelData.displayName === 'string' && modelData.displayName ? modelData.displayName : key;
+    if (lowerKey.includes('flash')) label = 'G3Flash';
+    else if (lowerKey.includes('pro')) label = 'G3Pro';
+    else if (lowerKey.includes('claude') && lowerKey.includes('opus')) label = 'Claude-Opus';
+    else if (lowerKey.includes('claude') && lowerKey.includes('sonnet')) label = 'Claude-Sonnet';
+    else if (lowerKey.includes('claude')) label = 'Claude';
+    else if (lowerKey.includes('gpt') || lowerKey.includes('o1')) label = 'GPT/O1';
+    label = label.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 80) || 'model';
+    models.push({ percent_remaining: Math.round(quotaInfo.remainingFraction * 100),
+      reset_time_iso: reset ? new Date(reset).toISOString() : null, label });
+  }
+  if (!models.length) throw new Error('No Google quota info');
+  models.sort((a, b) => a.label.localeCompare(b.label));
+  return { models };
+}
+
+async function refreshGoogleToken(refreshToken, requestJson = httpsRequest) {
   if (!refreshToken || !ANTIGRAVITY_CLIENT_ID || !ANTIGRAVITY_CLIENT_SECRET) return null;
 
   const postData = new URLSearchParams({
@@ -2174,7 +2274,7 @@ async function refreshGoogleToken(refreshToken) {
   }).toString();
 
   try {
-    const data = await httpsRequest(
+    const data = await requestJson(
       GOOGLE_TOKEN_REFRESH_URL,
       {
         method: 'POST',
