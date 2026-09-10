@@ -25,6 +25,10 @@ test('Go 5h and monthly use one compact bar-first row, including 0 and 100 perce
   assert.equal(text(usage(75, 50)), 'Go 5h▰▰75% M▰▱50%');
 });
 
+test('cached Go rows use a visible stale marker without extra display tokens', () => {
+  assert.equal(text({ ...usage(80, 29), cached: true }), 'Go* 5h▰▰80% M▰▱29%');
+});
+
 test('Go loading, absence, partial windows and failures never invent quota or leak error text', () => {
   assert.equal(text(undefined), 'Go …');
   assert.equal(text(null), 'Go N/A');

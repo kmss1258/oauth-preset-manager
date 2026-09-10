@@ -83,7 +83,7 @@ export function buildSidebarView(settings, quota, metrics, now = Date.now(), bud
     items.push({ id, label: label + window, color: colors[id], remaining: true, percent: ok ? row.percent : null,
       value: ok ? `${Math.round(row.percent)}% ${compactReset(row.resetAt, now)}` : full.slice(label.length).trim() });
   }
-  if (settings.go) items.push({ id: 'go', label: 'Go', color: colors.go, remaining: true, showBar: false, ...formatGoQuota(goResult) });
+  if (settings.go) items.push({ id: 'go', label: goResult?.cached ? 'Go*' : 'Go', color: colors.go, remaining: true, showBar: false, ...formatGoQuota(goResult) });
   const metric = (id, label, row, color) => items.push({ id, label, color,
     percent: row?.status === 'ok' ? row.percent : null,
     value: row?.status === 'ok' ? `${row.approximate ? '~' : ''}${formatGiB(row.used)}/${formatGiB(row.total)}G` : row?.status === 'loading' ? '…' : 'N/A' });

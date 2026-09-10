@@ -36,7 +36,7 @@ export function startHerdrQuota({ interactive = Boolean(process.stdin.isTTY && p
   if (!interactive || env.HERDR_ENV !== '1' || !env.HERDR_PANE_ID || !env.HERDR_SOCKET_PATH) {
     return { ready: Promise.resolve(), refresh: idle, setGoResult: idle, stop: async () => {} };
   }
-  return new HerdrQuotaDisplay({ env, homeDir, configDir, run, collector: collector || new ActiveQuotaCollector({ homeDir }),
+  return new HerdrQuotaDisplay({ env, homeDir, configDir, run, collector: collector || new ActiveQuotaCollector({ homeDir, configDir }),
     metrics: metrics || new SystemMetrics({ now }), settingsStore: settingsStore || new SidebarSettings(configDir),
     now, onWarning, tickMs, ttlMs });
 }
@@ -158,8 +158,15 @@ class HerdrQuotaDisplay {
     if (this.stopped || this.disabled) return;
     // Reuse the table's snapshot, retaining no account metadata or upstream errors.
     const percent = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
-    this.goResult = result ? { daily: { percent_remaining: percent(result.daily?.percent_remaining) },
-      monthly_percent: percent(result.monthly_percent), error: Boolean(result.error) } : null;
+    const cachedAt = typeof result?.cached_at === 'string' && Number.isFinite(Date.parse(result.cached_at))
+      ? result.cached_at : null;
+    const cacheError = typeof result?.cache_error === 'string' && /^[a-z][a-z0-9_]{0,31}$/.test(result.cache_error)
+      ? result.cache_error : null;
+    this.goResult = result ? {
+      daily: { percent_remaining: percent(result.daily?.percent_remaining) },
+      monthly_percent: percent(result.monthly_percent), error: Boolean(result.error),
+      cached: result.cached === true, cached_at: cachedAt, cache_error: cacheError,
+    } : null;
     return this.ready.then(() => this.serialize(async () => {
       if (this.stopped || this.disabled) return;
       await this.syncWorkspace();

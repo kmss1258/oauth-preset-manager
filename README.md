@@ -217,7 +217,7 @@ References: [CodexBar OAuth fetcher/schema](https://github.com/steipete/CodexBar
 
 **An API key alone now supports quota queries.** OPM calls `GET https://opencode.ai/zen/go/v1/usage` with Bearer authentication and maps rolling (5-hour), weekly and monthly usage to remaining percentages and absolute reset times. HTTP 200 `rate-limited` windows remain valid quota data.
 
-`OPENCODE_GO_API_KEY` takes precedence; otherwise OPM reads `opencode-go: { "type": "api", "key": "..." }` from its selected active OpenCode auth file. It does not scan saved preset keys. A configured key's failure never falls back to a different cookie account: 401 means invalid key, 403 means no Go subscription for that key's user/workspace, and 429 respects Retry-After (five minutes without it, minimum one minute). Cooldown is in-memory and keyed by a hash, so switching keys does not reuse another account's result. No inference or credential rewrite is involved.
+`OPENCODE_GO_API_KEY` takes precedence; otherwise OPM reads `opencode-go: { "type": "api", "key": "..." }` from its selected active OpenCode auth file. It stores a normalized, credential-bound snapshot in a private hashed cache directory under OPM's config directory. A failed live query uses the same key/workspace snapshot for up to 24 hours, marks the row with `*`, preserves the original success/reset times, and never sends an expired token. A later live success clears the marker; 429 cooldowns are persisted and still cannot be bypassed by `r`.
 
 Go usage errors occupy at most two lines in the quota table. **A usage 403 does not prove inference is unavailable:** the usage endpoint requires a Go subscription for the key's user/workspace, while inference can use other billing paths such as prepaid balance or another subscription. Conversely, inference can fail separately with `CreditsError`. OPM does not send inference requests merely to collect quota.
 
@@ -240,6 +240,9 @@ The stored Go file is the only source used when saving or distributing a Go OAut
 
 Go sidecars are stored outside the preset JSON files at `~/.config/oauth-preset-manager/preset-sidecars/opencode-go/<preset>.json` with restricted permissions.
 If the stored global Go session is missing or malformed, saving/overwriting a preset leaves any existing sidecar unchanged; clearing a session is never inferred from absent data.
+
+### Quota cache policy
+Every quota provider queries live first. On network, HTTP, or parsing failure, OPM may show only the same credential and effective request context's last successful normalized snapshot for up to 24 hours. This applies to saved OpenAI OAuth, native Codex/Claude, Google/Antigravity, OpenCode Go API keys and cookie workspaces, and Command Code. `*` marks stale values; a successful live query removes it. Cache files contain hashed identities and normalized percentages/timestamps only—not tokens, cookies, raw responses, raw errors, or credentials. Disk, RAM, and VRAM remain live system measurements and are never cached as quota.
 
 ## 📝 Project Structure
 

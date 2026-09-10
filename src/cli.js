@@ -690,7 +690,7 @@ function formatAccountLabel(result) {
 }
 
 export function formatOpenCodeGoAccountCell(result, options = {}) {
-  const accountId = result?.account_id || '-';
+  const accountId = `${result?.account_id || '-'}${result?.cached ? '*' : ''}`;
   const lines = [chalk.yellow(accountId)];
   if (options.includeWeekly) {
     lines.push(`${chalk.dim('W ')}${formatOpenCodeGoPercent(result?.weekly?.percent_remaining)} ${chalk.dim('·')} ${formatReset(result?.weekly?.reset_time_iso)}`);
@@ -700,7 +700,7 @@ export function formatOpenCodeGoAccountCell(result, options = {}) {
 }
 
 export function formatCommandCodeAccountCell(result) {
-  const account = chalk.cyan(fitQuotaLine(result?.nickname || result?.account_id || '-', Infinity));
+  const account = chalk.cyan(fitQuotaLine(`${result?.nickname || result?.account_id || '-'}${result?.cached ? '*' : ''}`, Infinity));
   const tokens = result?.command_code_usage?.total_tokens;
   const requests = result?.command_code_usage?.total_count;
   const usage = tokens != null ? `${tokens.toLocaleString('en-US')} tokens`
@@ -1135,15 +1135,18 @@ export function buildQuotaFrame(results, options = {}) {
   const account = (result, compact = false) => {
     if (result.provider === 'commandcode') return formatCommandCodeAccountCell(result);
     const sources = result.presets || [];
-    const label = formatAccountLabel(result) + (hasPresetLabel(result, 'Current Active') ? ' (Current Active)' : '');
+    const label = formatAccountLabel(result) + (hasPresetLabel(result, 'Current Active') ? ' (Current Active)' : '')
+      + (result.cached && result.provider === 'opencodego' ? '*' : '');
     const presets = sources.filter(source => !source.includes('Current Active')).map(source => {
       const metadata = presetMetadata[extractPresetName(source)] || {};
       const date = [metadata.last_used, metadata.created_at].map(value => Date.parse(value)).find(Number.isFinite);
       return { source, date: date ?? -Infinity };
     }).sort((a, b) => b.date - a.date).slice(0, 2);
-    const cached = result.cached ? [t('quota_cached', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean) : [];
+    const cached = result.cached && result.provider !== 'opencodego'
+      ? [t('quota_cached', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean) : [];
     if (compact) {
-      const cache = result.cached ? [t('quota_cached_compact', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean).join(' · ') : '';
+      const cache = result.cached && result.provider !== 'opencodego'
+        ? [t('quota_cached_compact', { age: formatRelativeAge(result.cached_at) || '-' }), result.cache_error].filter(Boolean).join(' · ') : '';
       const detail = [cache, ...presets.map(({ source }) => source)].filter(Boolean).join(', ');
       const activeOnly = hasPresetLabel(result, 'Current Active') && !detail
         && result.provider !== 'opencodego' && !result.extra_windows?.length;
@@ -1182,7 +1185,7 @@ export function buildQuotaFrame(results, options = {}) {
         return `${label} ${percent} ${reset}`;
       });
       table.push([
-        emphasize(result, result.provider === 'google' ? `google ${result.daily?.label || ''}` : result.provider === 'claude' ? 'Claude (5h)' : result.provider),
+        emphasize(result, result.provider === 'google' ? `google${result.cached ? '*' : ''} ${result.daily?.label || ''}` : result.provider === 'claude' ? `Claude${result.cached ? '*' : ''} (5h)` : `${result.provider}${result.cached ? '*' : ''}`),
         result.error ? formatQuotaError(result.error, 16).join('\n') : formatPercent(result.daily?.percent_remaining, percentOptions),
         formatReset(result.daily?.reset_time_iso), formatPercent(result.weekly?.percent_remaining, percentOptions),
         formatReset(result.weekly?.reset_time_iso), [account(result, true), ...details].join('\n').split('\n').map((line, index) =>
@@ -1194,7 +1197,7 @@ export function buildQuotaFrame(results, options = {}) {
     for (const result of items) {
       accountStarts.push(body.length);
       const provider = { openai: 'OpenAI', claude: 'Claude', opencodego: 'OpenCode Go', commandcode: 'Command Code', google: 'Google' }[result.provider] || result.provider;
-      body.push(chalk.cyan.bold(emphasize(result, `● ${provider}${result.daily?.label ? ` · ${result.daily.label}` : ''}`)));
+      body.push(chalk.cyan.bold(emphasize(result, `● ${provider}${result.cached ? '*' : ''}${result.daily?.label ? ` · ${result.daily.label}` : ''}`)));
       body.push(...account(result).split('\n').map((line, index) => chalk.yellow(index === 0 ? emphasize(result, line) : line)));
       if (result.error) body.push(...(['commandcode', 'opencodego'].includes(result.provider) ? formatQuotaError(result.error, width) : [chalk.red(result.error)]));
       else for (const [label, window] of windows(result)) {

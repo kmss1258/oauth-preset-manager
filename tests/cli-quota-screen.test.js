@@ -291,6 +291,20 @@ test('cached Claude usage retains bars with an explicit cache age and failure no
   } finally { setLanguage('en'); }
 });
 
+test('cached provider rows expose compact stale markers without adding physical lines', () => {
+  const cached = [
+    { provider: 'opencodego', account_id: 'wrk_cache', daily: quota, weekly: quota, monthly_percent: 29, cached: true, cache_error: 'error' },
+    { provider: 'commandcode', account_id: 'org_cache', nickname: 'tester', daily: quota, weekly: quota,
+      command_code_usage: { total_tokens: 123 }, cached: true, cache_error: 'error' },
+  ];
+  for (const columns of [39, 100, 120, 180, 240, 320]) {
+    const lines = buildQuotaFrame(cached, { columns }).lines.map(stripAnsi);
+    assert.match(lines.join('\n'), /OpenCode Go\*|opencodego\*|Go\*/);
+    assert.match(lines.join('\n'), /Command Code\*|commandcode\*/i);
+    assert.ok(lines.every(line => stringWidth(line) <= columns - 1));
+  }
+});
+
 test('paging exposes all body lines without scrolling and clamps after resize', () => {
   const options = { columns: 39, rows: 10, interactive: true, showGoogle: true };
   const first = buildQuotaFrame(results, options);
