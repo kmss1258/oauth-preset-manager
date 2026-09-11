@@ -21,7 +21,7 @@ export async function diskUsage(path, { statfs = fs.statfs, stat = fs.stat } = {
   try {
     const [space, file] = await Promise.all([statfs(path, { bigint: true }), stat(path)]);
     return { path, device: file.dev, status: 'ok',
-      ...capacity(Number((space.blocks - space.bfree) * space.bsize), Number(space.blocks * space.bsize)) };
+      ...capacity(Number((space.blocks - space.bavail) * space.bsize), Number(space.blocks * space.bsize)) };
   } catch { return { path, status: 'error' }; }
 }
 

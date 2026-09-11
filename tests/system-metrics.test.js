@@ -6,9 +6,9 @@ import { SIDEBAR_DEFAULTS } from '../src/sidebar-settings.js';
 const csv = '1, GPU-bbb, NVIDIA RTX 3060 Ti, 1024, 8192\n0, GPU-aaa, NVIDIA RTX 4060 Ti, 6144, 16384\n';
 const settings = { ...SIDEBAR_DEFAULTS };
 
-test('disk uses bfree, not available blocks, and isolates missing paths', async () => {
+test('disk uses user-available bavail blocks, not all-free bfree blocks, and isolates missing paths', async () => {
   const row = await diskUsage('/', { statfs: async () => ({ blocks: 100n, bfree: 20n, bavail: 10n, bsize: 1024n }), stat: async () => ({ dev: 1 }) });
-  assert.equal(row.percent, 80); assert.equal(row.used, 81920); assert.equal(row.device, 1);
+  assert.equal(row.percent, 90); assert.equal(row.used, 92160); assert.equal(row.total, 102400); assert.equal(row.device, 1);
   assert.deepEqual(await diskUsage('/missing', { statfs: async () => { throw 0; } }), { path: '/missing', status: 'error' });
   for (const [used, total] of [[0, 0], [-1, 2], [3, 2], [NaN, 2], [0, Infinity]]) assert.throws(() => capacity(used, total));
   assert.equal(formatGiB(6.25 * 1024 ** 3), '6.3');
